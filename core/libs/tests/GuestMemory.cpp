@@ -1621,6 +1621,67 @@ static void CheckVirtualQueryPartialMunmap() {
     Require(munmap_nid_postfix(memory + page * 2, page) == 0);
 }
 
+static void CheckUnmapAcrossHoles() {
+    constexpr std::size_t page = 0x4000;
+    const auto failed = reinterpret_cast<void*>(static_cast<std::uintptr_t>(-1));
+    for (const std::size_t start : {0u, 1u}) {
+        auto* memory = static_cast<unsigned char*>(mmap_nid_postfix(nullptr, page * 5, 3, 0x1002, -1, 0));
+        Require(memory != failed);
+        memory[0] = 17;
+        memory[page] = 29;
+        memory[page * 3] = 43;
+        memory[page * 4] = 71;
+        Require(munmap_nid_postfix(memory + page * 2, page) == 0);
+        Require(memory[0] == 17 && memory[page] == 29 && memory[page * 3] == 43 && memory[page * 4] == 71);
+        Require(munmap_nid_postfix(memory + page * (1 + start), page * (3 - start)) == 0);
+        Require(memory[0] == 17 && memory[page * 4] == 71);
+        if (start != 0) Require(memory[page] == 29);
+        {
+            GuestAllocations::Mutation mutation;
+            Require(!mutation.Overlaps(memory + page * (1 + start), page * (3 - start)));
+            Require(mutation.Covers(memory, page * (1 + start)));
+            Require(mutation.Covers(memory + page * 4, page));
+        }
+        Require(munmap_nid_postfix(memory, page * 5) == 0);
+        GuestAllocations::Mutation mutation;
+        Require(!mutation.Overlaps(memory, page * 5));
+    }
+}
+
+static void CheckUnmapHoleCallbacks() {
+    std::array<std::byte, 192> memory{};
+    for (const std::size_t start : {0u, 32u}) {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(memory.data(), 96, true, true, false);
+        mutation.Add(memory.data() + 128, 64, true, true, false);
+        mutation.Unmap(memory.data() + 32, 32, [&](const void* piece, std::size_t bytes, const void* allocation, bool last) {
+            Require(piece == memory.data() + 32 && bytes == 32 && allocation == memory.data() && !last);
+        });
+        std::size_t calls = 0;
+        std::size_t releases = 0;
+        mutation.Unmap(memory.data() + start, 96 - start, [&](const void* piece, std::size_t bytes, const void* allocation, bool last) {
+            const auto expected = start == 0 && calls == 0 ? memory.data() : memory.data() + 64;
+            Require(piece == expected && bytes == 32 && allocation == memory.data());
+            Require(last == (start == 0 && calls == 1));
+            ++calls;
+            if (last) ++releases;
+        });
+        Require(calls == (start == 0 ? 2u : 1u));
+        Require(!mutation.Overlaps(memory.data() + start, 96 - start));
+        Require(mutation.Covers(memory.data() + 128, 64));
+        if (start != 0) {
+            Require(mutation.Covers(memory.data(), 32));
+            mutation.Unmap(memory.data(), 32, [&](const void* piece, std::size_t bytes, const void* allocation, bool last) {
+                Require(piece == memory.data() && bytes == 32 && allocation == memory.data() && last);
+                ++releases;
+            });
+        }
+        Require(releases == 1);
+        Require(!mutation.Overlaps(memory.data(), 96));
+        mutation.Remove(memory.data() + 128);
+    }
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("APS5_PIN_WAIT_MS", "1000");
@@ -1629,6 +1690,8 @@ int main() {
     CheckVirtualQueryForNonReadableGuestRange();
     CheckReleaseFlexibleMemory();
     CheckVirtualQueryPartialMunmap();
+    CheckUnmapAcrossHoles();
+    CheckUnmapHoleCallbacks();
     CheckNamedAndHintedMappings();
     CheckInternalNamedFlexibleMapping();
     CheckBatchMapStopsAtInvalidEntry();
