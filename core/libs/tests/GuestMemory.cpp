@@ -334,6 +334,132 @@ static void CheckFixedMappingReplacesPartialOverlap() {
     Require(sceKernelReleaseDirectMemory(phys, page * 3) == 0);
 }
 
+static void CheckInvalidMappingRequestsPreserveMemory() {
+    constexpr std::size_t page = 0x4000;
+    struct Snapshot {
+        std::array<int, 4> results{};
+        std::array<VirtualQueryInfo, 4> queries{};
+        std::vector<GuestAllocations::Range> ranges;
+        std::size_t available = 0;
+    };
+    const auto snapshot = [&](unsigned char* base) {
+        Snapshot state;
+        for (std::size_t index = 0; index < state.queries.size(); ++index) {
+            state.results[index] = sceKernelVirtualQuery(base + page * index, 0, &state.queries[index], sizeof(VirtualQueryInfo));
+        }
+        const auto first = reinterpret_cast<std::uintptr_t>(base);
+        const auto last = first + page * state.queries.size();
+        for (const auto& range : GuestAllocations::GuestAllocationsAcquireAll_nid_postfix()) {
+            if (range->address < last && range->address + range->bytes > first) state.ranges.push_back(*range);
+        }
+        Require(sceKernelAvailableFlexibleMemorySize(&state.available) == 0);
+        return state;
+    };
+    const auto unchanged = [&](unsigned char* base, const Snapshot& before) {
+        const auto after = snapshot(base);
+        Require(after.results == before.results && after.available == before.available);
+        Require(std::memcmp(after.queries.data(), before.queries.data(), sizeof(before.queries)) == 0);
+        Require(after.ranges.size() == before.ranges.size());
+        for (std::size_t index = 0; index < before.ranges.size(); ++index) {
+            const auto& oldRange = before.ranges[index];
+            const auto& newRange = after.ranges[index];
+            Require(newRange.address == oldRange.address && newRange.bytes == oldRange.bytes);
+            Require(newRange.allocationAddress == oldRange.allocationAddress && newRange.allocationBytes == oldRange.allocationBytes);
+            Require(newRange.readable == oldRange.readable && newRange.writable == oldRange.writable);
+            Require(newRange.releasable == oldRange.releasable && newRange.gpu == oldRange.gpu);
+        }
+    };
+    constexpr const char* invalidAlignment = "Memory alignment must be a power of two no smaller than the guest page size";
+    constexpr const char* invalidRange = "Invalid memory address, alignment or range";
+    std::int64_t phys = 0;
+    Require(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, page * 2, 0, 3, &phys) == 0);
+    for (bool direct : {false, true}) {
+        for (std::size_t ownedPages : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+            void* reserved = nullptr;
+            Require(sceKernelReserveVirtualRange(&reserved, page * 4, 0, page * 4) == 0);
+            auto* base = static_cast<unsigned char*>(reserved);
+            auto* target = base + page;
+            Require(sceKernelMunmap(target, page * 2) == 0);
+            if (ownedPages != 0) {
+                void* mapped = target;
+                const int result = direct ? sceKernelMapDirectMemory(&mapped, page * ownedPages, 3, 0x10, phys, 0)
+                                          : sceKernelMapFlexibleMemory(&mapped, page * ownedPages, 3, 0x10);
+                Require(result == 0 && mapped == target);
+                for (std::size_t index = 0; index < ownedPages; ++index) target[page * index + 7] = static_cast<unsigned char>(31 + index);
+            }
+            const auto before = snapshot(base);
+            const auto reject = [&](const auto& request, const char* message) {
+                void* output = target;
+                bool rejected = false;
+                try {
+                    request(&output);
+                } catch (const std::invalid_argument& error) {
+                    rejected = true;
+                    Require(std::strcmp(error.what(), message) == 0);
+                }
+                Require(rejected && output == target);
+                unchanged(base, before);
+                for (std::size_t index = 0; index < ownedPages; ++index) {
+                    volatile unsigned char& value = target[page * index + 7];
+                    Require(value == static_cast<unsigned char>(31 + index));
+                    value = static_cast<unsigned char>(41 + index);
+                    Require(value == static_cast<unsigned char>(41 + index));
+                    value = static_cast<unsigned char>(31 + index);
+                }
+            };
+            for (const auto& [flags, message] : {std::pair{0x20010, "Unsupported memory mapping flags 0x20010"},
+                                                std::pair{0x20090, "Unsupported memory mapping flags 0x20090"}}) {
+                reject([&](void** output) {
+                    if (direct) sceKernelMapDirectMemory(output, page * 2, 1, flags, phys, 0);
+                    else sceKernelMapFlexibleMemory(output, page * 2, 1, flags);
+                }, message);
+            }
+            reject([&](void** output) {
+                if (direct) sceKernelMapDirectMemory(output, page * 2, 0x400, 0x10, phys, 0);
+                else sceKernelMapFlexibleMemory(output, page * 2, 0x400, 0x10);
+            }, "Unsupported memory protection bits: 1024");
+            for (const auto& [alignment, message] : {std::pair{page / 2, invalidAlignment},
+                                                    std::pair{page * 3, invalidAlignment},
+                                                    std::pair{page * 2, invalidRange}}) {
+                if (direct) reject([&](void** output) { sceKernelMapDirectMemory(output, page * 2, 1, 0x10, phys, alignment); }, message);
+                reject([&](void** output) { sceKernelReserveVirtualRange(output, page * 2, 0x10, alignment); }, message);
+            }
+            Require(sceKernelMunmap(base, page) == 0);
+            if (ownedPages != 0) Require(sceKernelMunmap(target, page * ownedPages) == 0);
+            Require(sceKernelMunmap(base + page * 3, page) == 0);
+        }
+    }
+    void* reserved = nullptr;
+    Require(sceKernelReserveVirtualRange(&reserved, page * 4, 0, page * 4) == 0);
+    auto* base = static_cast<unsigned char*>(reserved);
+    const auto before = snapshot(base);
+    for (bool direct : {false, true}) {
+        void* output = base + page;
+        bool rejected = false;
+        try {
+            if (direct) sceKernelMapDirectMemory(&output, page * 2, 3, 0x20000, phys, 0);
+            else sceKernelMapFlexibleMemory(&output, page * 2, 3, 0x20000);
+        } catch (const std::invalid_argument& error) {
+            rejected = true;
+            Require(std::strcmp(error.what(), "Unsupported memory mapping flags 0x20010") == 0);
+        }
+        Require(rejected && output == base + page);
+        unchanged(base, before);
+    }
+    void* output = base + page;
+    bool rejected = false;
+    try { sceKernelMapDirectMemory(&output, page * 2, 3, 0, phys, page * 2); }
+    catch (const std::invalid_argument& error) {
+        rejected = true;
+        Require(std::strcmp(error.what(), invalidRange) == 0);
+    }
+    Require(rejected && output == base + page);
+    unchanged(base, before);
+    Require(sceKernelMapDirectMemory(&output, page * 2, 3, 0, phys, 0) == 0 && output == base + page);
+    Require(sceKernelMunmap(reserved, page * 4) == 0);
+    Require(sceKernelReleaseDirectMemory(phys, page * 2) == 0);
+}
+
 static void CheckGetDirectMemoryType() {
     constexpr std::size_t page = 0x4000;
     std::int64_t first = 0;
@@ -1638,6 +1764,7 @@ int main() {
     CheckReleaseDirectMemoryClearsMappings();
     CheckReleaseDirectMemoryRejectsInvalidRanges();
     CheckFixedMappingReplacesPartialOverlap();
+    CheckInvalidMappingRequestsPreserveMemory();
     CheckDirectMemoryGpuProtBits();
     CheckGpuAccessFollowsProtection();
     CheckGpuMapsAreObserved();
