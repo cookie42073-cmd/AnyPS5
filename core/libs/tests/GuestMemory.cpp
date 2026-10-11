@@ -58,6 +58,8 @@ int APS5_VABI sceKernelSetVirtualRangeName(const void*, std::uint64_t, const cha
 int APS5_VABI sceKernelClearVirtualRangeName(const void*, std::uint64_t);
 int APS5_VABI sceKernelAllocateDirectMemory(std::int64_t, std::int64_t, std::size_t, std::size_t, int, std::int64_t*);
 int APS5_VABI sceKernelMapDirectMemory(void**, std::size_t, int, int, std::int64_t, std::size_t);
+int APS5_VABI sceKernelMapDirectMemory2(void**, std::size_t, int, int, int, std::int64_t, std::size_t);
+int APS5_VABI sceKernelMapNamedDirectMemory(void**, std::size_t, int, int, std::int64_t, std::size_t, const char*);
 int APS5_VABI sceKernelReleaseDirectMemory(std::int64_t, std::size_t);
 int APS5_VABI sceKernelCheckedReleaseDirectMemory(std::int64_t, std::size_t);
 int APS5_VABI sceKernelReserveVirtualRange(void**, std::size_t, int, std::size_t);
@@ -140,6 +142,73 @@ static void CheckFlexibleReplacementAccounting() {
         }
         Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before);
     }
+}
+
+static void CheckFlexibleAccountingAfterDirectAndReservation() {
+    constexpr std::size_t page = 0x4000;
+    std::int64_t physical = -1;
+    Require(sceKernelAllocateDirectMemory(0, DIRECT_MEMORY_SIZE, page, 0, 0, &physical) == 0);
+    for (int variant = 0; variant < 4; ++variant) {
+        std::size_t before = 0;
+        std::size_t available = 0;
+        Require(sceKernelAvailableFlexibleMemorySize(&before) == 0);
+        void* mapped = nullptr;
+        Require(sceKernelMapFlexibleMemory(&mapped, 3 * page, 3, 0) == 0);
+        auto* bytes = static_cast<volatile unsigned char*>(mapped);
+        bytes[0] = 11;
+        bytes[page * 2] = 33;
+        void* direct = static_cast<unsigned char*>(mapped) + page;
+        const auto mapDirect = [&](int flags) {
+            switch (variant) {
+            case 0: return sceKernelMapDirectMemory(&direct, page, 3, flags, physical, 0);
+            case 1: return sceKernelMapDirectMemory2(&direct, page, 0, 3, flags, physical, 0);
+            case 2: return sceKernelMapNamedDirectMemory(&direct, page, 3, flags, physical, 0, "replacement");
+            default:
+                KernelBatchMapEntry entry{direct, static_cast<std::uint64_t>(physical), page, 3, 0, 0, 0};
+                int processed = -1;
+                const int result = sceKernelBatchMap2(&entry, 1, &processed, flags);
+                Require(processed == (result == 0 ? 1 : 0));
+                direct = entry.start;
+                return result;
+            }
+        };
+        Require(mapDirect(0x90) == static_cast<int>(0x8002000cu));
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 3 * page);
+        Require(mapDirect(0x10) == 0);
+        Require(direct == static_cast<unsigned char*>(mapped) + page);
+        VirtualQueryInfo info{};
+        Require(sceKernelVirtualQuery(direct, 0, &info, sizeof(info)) == 0);
+        Require(info.is_direct && !info.is_flexible && info.protection == 3 && info.offset == static_cast<std::uint64_t>(physical));
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 2 * page);
+        Require(bytes[0] == 11 && bytes[page * 2] == 33);
+        bytes[page] = 77;
+        if (variant == 2) {
+            Require(std::strcmp(NameAt(direct), "replacement") == 0);
+            Require(sceKernelClearVirtualRangeName(direct, page) == 0);
+        }
+
+        void* reserved = mapped;
+        bool rejected = false;
+        try {
+            rejected = sceKernelReserveVirtualRange(&reserved, page, 0x90, 0) != 0;
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        Require(rejected && bytes[0] == 11);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 2 * page);
+        Require(sceKernelReserveVirtualRange(&reserved, page, variant % 2 == 0 ? 0x10 : 0x400010, 0) == 0 && reserved == mapped);
+        Require(sceKernelVirtualQuery(reserved, 0, &info, sizeof(info)) == 0);
+        Require(!info.is_committed && !info.is_direct && !info.is_flexible && info.protection == 0);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - page);
+        Require(bytes[page] == 77 && bytes[page * 2] == 33);
+
+        Require(sceKernelMunmap(reserved, page) == 0);
+        Require(sceKernelMunmap(direct, page) == 0);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - page);
+        Require(sceKernelMunmap(static_cast<unsigned char*>(mapped) + 2 * page, page) == 0);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before);
+    }
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
 }
 
 static void CheckNamedAndHintedMappings() {
@@ -1948,6 +2017,7 @@ int main() {
     CheckVirtualQueryForNonReadableGuestRange();
     CheckReleaseFlexibleMemory();
     CheckFlexibleReplacementAccounting();
+    CheckFlexibleAccountingAfterDirectAndReservation();
     CheckVirtualQueryPartialMunmap();
     CheckUnmapAcrossHoles();
     CheckUnmapHoleCallbacks();

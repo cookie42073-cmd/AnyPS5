@@ -137,6 +137,20 @@ int _mapFlexible(void** addr, size_t len, int prot, int flags) {
     return result;
 }
 
+int _mapDirect(void** addr, size_t len, int prot, int flags, int64_t physical, size_t alignment) {
+    std::lock_guard lock(g_flexibleLock);
+    const int result = DoMapDirect(addr, len, prot, flags, physical, alignment);
+    if (result == 0) _releaseFlexibleLocked(reinterpret_cast<uintptr_t>(*addr), len);
+    return result;
+}
+
+int _reserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
+    std::lock_guard lock(g_flexibleLock);
+    const int result = DoReserveVirtual(addr, len, flags, alignment);
+    if (result == 0) _releaseFlexibleLocked(reinterpret_cast<uintptr_t>(*addr), len);
+    return result;
+}
+
 void _releaseFlexible(uintptr_t start, size_t len) {
     std::lock_guard lock(g_flexibleLock);
     _releaseFlexibleLocked(start, len);
@@ -197,12 +211,12 @@ size_t APS5_VABI sceKernelGetDirectMemorySize(void) {
 
 int APS5_VABI sceKernelMapDirectMemory(void** addr, size_t len, int prot, int flags, int64_t direct_memory_start, size_t alignment) {
  (void)alignment;
- return DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
+ return _mapDirect(addr, len, prot, flags, direct_memory_start, alignment);
 }
 
 int APS5_VABI sceKernelMapDirectMemory2(void** addr, size_t len, int type, int prot, int flags, int64_t direct_memory_start, size_t alignment) {
  (void)type;
- return DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
+ return _mapDirect(addr, len, prot, flags, direct_memory_start, alignment);
 }
 
 int APS5_VABI sceKernelMapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags) {
@@ -212,7 +226,7 @@ int APS5_VABI sceKernelMapFlexibleMemory(void** addr_in_out, size_t len, int pro
 int APS5_VABI sceKernelSetVirtualRangeName(const void* addr, uint64_t len, const char* name);
 
 int APS5_VABI sceKernelMapNamedDirectMemory(void** addr, size_t len, int prot, int flags, int64_t direct_memory_start, size_t alignment, const char* name) {
- const int result = DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
+ const int result = _mapDirect(addr, len, prot, flags, direct_memory_start, alignment);
  if (result == 0 && name) sceKernelSetVirtualRangeName(*addr, len, name);
  return result;
 }
@@ -254,7 +268,7 @@ int APS5_VABI sceKernelReleaseDirectMemory(int64_t start, size_t len) {
 }
 
 int APS5_VABI sceKernelReserveVirtualRange(void** addr, size_t len, int flags, size_t alignment) {
- return DoReserveVirtual(addr, len, flags, alignment);
+ return _reserveVirtual(addr, len, flags, alignment);
 }
 
 int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInfo* info, uint64_t info_size) {
@@ -454,7 +468,7 @@ int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, 
   }
   switch (entry.operation) {
   case OpMapDirect:
-   result = DoMapDirect(&entry.start, entry.length, static_cast<uint8_t>(entry.protection), flags, static_cast<int64_t>(entry.offset), 0);
+   result = _mapDirect(&entry.start, entry.length, static_cast<uint8_t>(entry.protection), flags, static_cast<int64_t>(entry.offset), 0);
    break;
   case OpUnmap:
    result = sceKernelMunmap(reinterpret_cast<uint64_t>(entry.start), entry.length);
