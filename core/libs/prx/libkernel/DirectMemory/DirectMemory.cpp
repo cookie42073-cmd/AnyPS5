@@ -540,7 +540,7 @@ void Unmap(void* addr, size_t len) {
 #endif
 }
 
-void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
+size_t ValidateMappingArguments(void* addr, size_t len, int flags, size_t alignment) {
     ValidateLength(len);
     alignment = ValidateAlignment(alignment);
     constexpr int GuestMapFixed = 0x10;
@@ -552,8 +552,14 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
         std::snprintf(message, sizeof(message), "Unsupported memory mapping flags 0x%x", flags);
         throw std::invalid_argument(message);
     }
+    if ((flags & GuestMapFixed) != 0) ValidateRange(addr, len, alignment);
+    return alignment;
+}
+
+void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
+    constexpr int GuestMapFixed = 0x10;
+    constexpr int GuestMapNoOverwrite = 0x80;
     if ((flags & GuestMapFixed) != 0) {
-        ValidateRange(addr, len, alignment);
 #ifdef _WIN32
         if ((flags & GuestMapNoOverwrite) != 0) {
             const auto start = reinterpret_cast<std::uintptr_t>(addr);
@@ -776,6 +782,8 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
     }
     GuestAllocations::Mutation mutation;
     flags = PlaceHintInReservation(*addr, len, flags);
+    alignment = ValidateMappingArguments(*addr, len, flags, alignment);
+    const auto nativeProtection = LinuxProtFromSce(prot);
     if (FixedNoOverwriteConflict(mutation, *addr, len, flags)) return SCE_KERNEL_ERROR_ENOMEM;
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags, physStart)) {
         EraseReservations(*addr, len);
@@ -787,7 +795,7 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
     ValidatePhysicalRange(static_cast<std::uint64_t>(physStart), len);
     void* mapped = MapAligned(*addr, len, PROT_NONE, flags, alignment);
     try {
-        AddMapping(reinterpret_cast<std::uintptr_t>(mapped), len, static_cast<std::uint64_t>(physStart), LinuxProtFromSce(prot));
+        AddMapping(reinterpret_cast<std::uintptr_t>(mapped), len, static_cast<std::uint64_t>(physStart), nativeProtection);
         mutation.Add(mapped, len, (prot & 3) != 0, (prot & 2) != 0, (prot & GuestProtGpuReadWrite) != 0);
         if ((prot & GuestProtGpuReadWrite) != 0) mutation.NoteGpuMapping(mapped, len);
     } catch (...) {
@@ -805,8 +813,10 @@ int DoMapDirect(void** addr, size_t len, int prot, int flags, int64_t physStart,
 int DoMapAnon(void** addr, size_t len, int prot, int flags, size_t alignment) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
+    const auto nativeProtection = LinuxProtFromSce(prot);
     GuestAllocations::Mutation mutation;
     flags = PlaceHintInReservation(*addr, len, flags);
+    alignment = ValidateMappingArguments(*addr, len, flags, alignment);
     if (FixedNoOverwriteConflict(mutation, *addr, len, flags)) return SCE_KERNEL_ERROR_ENOMEM;
     if (RemapFixedIntoRegistered(mutation, *addr, len, prot, flags)) {
         EraseReservations(*addr, len);
@@ -814,7 +824,7 @@ int DoMapAnon(void** addr, size_t len, int prot, int flags, size_t alignment) {
         return 0;
     }
     ReplaceFixedOverlap(mutation, *addr, len, flags);
-    void* mapped = MapAligned(*addr, len, LinuxProtFromSce(prot), flags, alignment);
+    void* mapped = MapAligned(*addr, len, nativeProtection, flags, alignment);
     try {
         mutation.Add(mapped, len, (prot & 3) != 0, (prot & 2) != 0, (prot & GuestProtGpuReadWrite) != 0);
         if ((prot & GuestProtGpuReadWrite) != 0) mutation.NoteGpuMapping(mapped, len);
@@ -915,8 +925,11 @@ int DoMunmap(void* addr, size_t len) {
 int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
-    GuestAllocations::Mutation mutation;
     const bool fixed = *addr != nullptr && (flags & GuestMapFixedFlag) != 0;
+    constexpr int GuestMapNoCoalesce = 0x400000;
+    const int placementFlags = fixed ? GuestMapFixedFlag | (flags & GuestMapNoCoalesce) : 0;
+    alignment = ValidateMappingArguments(*addr, len, placementFlags, alignment);
+    GuestAllocations::Mutation mutation;
     if (fixed && mutation.Covers(*addr, len)) {
         constexpr int GuestMapNoOverwrite = 0x80;
         if ((flags & GuestMapNoOverwrite) == 0 && RemapFixedIntoRegistered(mutation, *addr, len, 0, GuestMapFixedFlag)) {
@@ -927,8 +940,7 @@ int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
         mutation.RequireAvailable(*addr, len);
     }
     if (fixed) mutation.RequireAvailable(*addr, len);
-    constexpr int GuestMapNoCoalesce = 0x400000;
-    void* mapped = MapAligned(*addr, len, PROT_NONE, fixed ? GuestMapFixedFlag | (flags & GuestMapNoCoalesce) : 0, alignment);
+    void* mapped = MapAligned(*addr, len, PROT_NONE, placementFlags, alignment);
     try {
         mutation.Add(mapped, len, false, false, false);
     } catch (...) {
