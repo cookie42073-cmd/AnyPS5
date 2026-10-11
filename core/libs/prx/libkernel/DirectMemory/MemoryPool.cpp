@@ -1,6 +1,7 @@
 #include "prx/libkernel/DirectMemory/MemoryPool.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <mutex>
 
@@ -16,9 +17,11 @@ struct PhysicalMemoryPool {
         std::lock_guard<std::mutex> lock(_mutex);
         size_t align = (alignment == 0) ? PS5_PAGE_SIZE : alignment;
         uint64_t start = static_cast<uint64_t>(searchStart);
-        uint64_t end = static_cast<uint64_t>(searchEnd);
+        uint64_t end = std::min<uint64_t>(static_cast<uint64_t>(searchEnd), DIRECT_MEMORY_SIZE);
+        if (start >= end || len > end - start || align - 1 > std::numeric_limits<uint64_t>::max() - start)
+            return SCE_KERNEL_ERROR_EAGAIN;
         uint64_t cur = (start + align - 1) & ~(align - 1);
-        while (cur + len <= end && cur + len <= DIRECT_MEMORY_SIZE) {
+        while (cur <= end && len <= end - cur) {
             if (_isFree(cur, len)) {
                 CreateDirectMemoryBacking(static_cast<int64_t>(cur), len, memoryType);
                 _mark(cur, len, true);
@@ -26,6 +29,7 @@ struct PhysicalMemoryPool {
                 *physOut = static_cast<int64_t>(cur);
                 return 0;
             }
+            if (align > end - cur) break;
             cur += align;
         }
         return SCE_KERNEL_ERROR_EAGAIN;

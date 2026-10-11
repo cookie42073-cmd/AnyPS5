@@ -209,6 +209,56 @@ static void CheckBatchMapStopsAtInvalidEntry() {
     Require(sceKernelMunmap(entries[0].start, page) == 0);
 }
 
+static void CheckDirectMemoryAllocationBounds() {
+    constexpr std::size_t page = PS5_PAGE_SIZE;
+    constexpr std::size_t huge = std::numeric_limits<std::size_t>::max() & ~(page - 1);
+    constexpr std::int64_t capacity = static_cast<std::int64_t>(DIRECT_MEMORY_SIZE);
+    int type = -1;
+    std::int64_t start = -1;
+    std::int64_t end = -1;
+    Require(sceKernelGetDirectMemoryType(0, &type, &start, &end) == SCE_KERNEL_ERROR_ENOENT);
+    const auto noFit = [&](std::int64_t start, std::int64_t end, std::size_t length, std::size_t alignment) {
+        constexpr std::int64_t unchanged = 0x12345678;
+        std::int64_t physical = unchanged;
+        Require(sceKernelAllocateDirectMemory(start, end, length, alignment, 0, &physical) == SCE_KERNEL_ERROR_EAGAIN);
+        Require(physical == unchanged);
+    };
+    noFit(page * 2, page * 3, page, huge);
+    noFit(page, page * 2, huge, 0);
+    noFit(page, page * 2, huge, page);
+    noFit(0, capacity, DIRECT_MEMORY_SIZE + page, 0);
+    noFit(capacity, std::numeric_limits<std::int64_t>::max(), page, 0);
+    noFit(capacity - page, std::numeric_limits<std::int64_t>::max(), page * 2, 0);
+    noFit(std::numeric_limits<std::int64_t>::max() - page + 1,
+          std::numeric_limits<std::int64_t>::max(), page, 0);
+    noFit(page + 1, page * 2, page, 0);
+
+    std::int64_t physical = -1;
+    Require(sceKernelAllocateDirectMemory(0, page, page, 0, 3, &physical) == 0 && physical == 0);
+    noFit(0, page * 2, page, huge);
+    noFit(0, page * 2, page, std::size_t{1} << 63);
+    Require(sceKernelGetDirectMemoryType(physical, &type, &start, &end) == 0);
+    Require(type == 3 && start == 0 && end == page);
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
+
+    physical = -1;
+    Require(sceKernelAllocateDirectMemory(capacity - page, capacity, page, 0, 1, &physical) == 0);
+    Require(physical == capacity - page);
+    noFit(capacity - page, std::numeric_limits<std::int64_t>::max(), page, 0);
+    Require(sceKernelGetDirectMemoryType(physical, &type, &start, &end) == 0);
+    Require(type == 1 && start == capacity - page && end == capacity);
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
+
+    physical = -1;
+    Require(sceKernelAllocateDirectMemory(page + 1, page * 3, page, 0, 0, &physical) == 0);
+    Require(physical == page * 2);
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
+    physical = -1;
+    Require(sceKernelAllocateDirectMemory(page + 1, page * 5, page, page * 4, 0, &physical) == 0);
+    Require(physical == page * 4);
+    Require(sceKernelReleaseDirectMemory(physical, page) == 0);
+}
+
 static void CheckCheckedReleaseDirectMemory() {
     constexpr std::size_t page = 0x4000;
     std::int64_t phys = 0;
@@ -1625,6 +1675,7 @@ int main() {
 #ifdef _WIN32
     _putenv_s("APS5_PIN_WAIT_MS", "1000");
 #endif
+    CheckDirectMemoryAllocationBounds();
     CheckVirtualQuerySplitFlexibleRanges();
     CheckVirtualQueryForNonReadableGuestRange();
     CheckReleaseFlexibleMemory();
