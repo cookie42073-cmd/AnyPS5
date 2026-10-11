@@ -1042,6 +1042,53 @@ static void CheckArenaHonoursHintsWithoutGoingBelowThem() {
     GuestArena::GuestArenaRelease_nid_postfix(placed, page);
 }
 
+static void CheckArenaAllocatesHighestAvailableRanges() {
+    constexpr std::size_t page = 0x4000;
+    constexpr std::size_t alignment = 0x200000;
+    constexpr std::size_t bytes = (64ull << 30) - page;
+    std::uintptr_t base = 0;
+    std::size_t size = 0;
+    GuestArena::GuestArenaRange_nid_postfix(&base, &size);
+    std::vector<void*> allocations;
+    bool exhausted = false;
+    for (std::size_t count = 0; count <= size / bytes; ++count) {
+        void* allocation = nullptr;
+        try {
+            allocation = GuestArena::GuestArenaAllocateHighest_nid_postfix(bytes, alignment);
+        } catch (const std::runtime_error& error) {
+            Require(std::strcmp(error.what(), "guest address space arena exhausted") == 0);
+            exhausted = true;
+            break;
+        }
+        const auto address = reinterpret_cast<std::uintptr_t>(allocation);
+        Require(address % alignment == 0);
+        Require(GuestArena::GuestArenaContains_nid_postfix(allocation, bytes));
+        if (!allocations.empty()) Require(address + bytes <= reinterpret_cast<std::uintptr_t>(allocations.back()));
+#ifdef _WIN32
+        Require(!GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(address, bytes));
+#endif
+        allocations.push_back(allocation);
+    }
+    Require(exhausted && allocations.size() >= 2);
+    GuestArena::GuestArenaRelease_nid_postfix(allocations[0], bytes);
+    GuestArena::GuestArenaRelease_nid_postfix(allocations[1], bytes);
+    Require(GuestArena::GuestArenaAllocateHighest_nid_postfix(bytes, alignment) == allocations[0]);
+    Require(GuestArena::GuestArenaAllocateHighest_nid_postfix(bytes, alignment) == allocations[1]);
+    for (void* allocation : allocations) GuestArena::GuestArenaRelease_nid_postfix(allocation, bytes);
+    Require(GuestArena::GuestArenaAllocateHighest_nid_postfix(bytes, alignment) == allocations[0]);
+    GuestArena::GuestArenaRelease_nid_postfix(allocations[0], bytes);
+    bool oversized = false;
+    try { GuestArena::GuestArenaAllocateHighest_nid_postfix(std::numeric_limits<std::size_t>::max(), alignment); }
+    catch (const std::runtime_error&) { oversized = true; }
+    Require(oversized);
+    for (const auto invalidAlignment : {std::size_t{0}, page * 3}) {
+        bool invalid = false;
+        try { GuestArena::GuestArenaAllocateHighest_nid_postfix(page, invalidAlignment); }
+        catch (const std::invalid_argument&) { invalid = true; }
+        Require(invalid);
+    }
+}
+
 static void CheckFixedMappingsReachTheApplicationAreaEnd() {
     constexpr std::size_t page = 0x4000;
     constexpr std::uintptr_t applicationAreaEnd = 0xFC00000000ull;
@@ -1906,6 +1953,7 @@ int main() {
     CheckArenaPlacesUnhintedMappingsInsideTheWindow();
     CheckArenaReusesAFreedRange();
     CheckArenaHonoursHintsWithoutGoingBelowThem();
+    CheckArenaAllocatesHighestAvailableRanges();
     CheckSharedWriteTracking();
     CheckReadsIntoSharedWriteTracking();
     CheckPinnedSharedPages();

@@ -540,6 +540,8 @@ void Unmap(void* addr, size_t len) {
 #endif
 }
 
+enum class Placement { Lowest, Highest };
+
 size_t ValidateMappingArguments(void* addr, size_t len, int flags, size_t alignment) {
     ValidateLength(len);
     alignment = ValidateAlignment(alignment);
@@ -556,9 +558,23 @@ size_t ValidateMappingArguments(void* addr, size_t len, int flags, size_t alignm
     return alignment;
 }
 
-void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
+void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment, Placement placement) {
     constexpr int GuestMapFixed = 0x10;
     constexpr int GuestMapNoOverwrite = 0x80;
+    if (placement == Placement::Highest) {
+        void* placed = GuestArena::GuestArenaAllocateHighest_nid_postfix(len, alignment);
+        try {
+#ifdef _WIN32
+            if (prot != PROT_NONE) CommitArenaRange(placed, len, WinProtFromPosix(prot));
+#else
+            if (ArenaCommit(placed, len, prot) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "Arena mapping failed");
+#endif
+        } catch (...) {
+            GuestArena::GuestArenaRelease_nid_postfix(placed, len);
+            throw;
+        }
+        return placed;
+    }
     if ((flags & GuestMapFixed) != 0) {
 #ifdef _WIN32
         if ((flags & GuestMapNoOverwrite) != 0) {
@@ -595,11 +611,11 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
             GuestArena::GuestArenaRelease_nid_postfix(addr, len);
             throw std::system_error(errno, std::generic_category(), "Arena mapping failed");
         }
-        const int placement = (flags & GuestMapNoOverwrite) != 0 ? MAP_FIXED_NOREPLACE : MAP_FIXED;
+        const int nativePlacement = (flags & GuestMapNoOverwrite) != 0 ? MAP_FIXED_NOREPLACE : MAP_FIXED;
 #else
-        const int placement = MAP_FIXED;
+        const int nativePlacement = MAP_FIXED;
 #endif
-        void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | placement, -1, 0);
+        void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | nativePlacement, -1, 0);
         if (result == MAP_FAILED) {
             // return SCE_KERNEL_ERROR_ENOMEM;
             throw std::system_error(errno, std::generic_category(), "Fixed mmap failed");
@@ -708,8 +724,8 @@ void RecordProtection(const void* addr, size_t len, int prot) {
     if (prot >= 0) g_protections.emplace(start, ProtectedRange{start + len, prot});
 }
 
-void* MapAligned(void* addr, size_t len, int prot, int flags, size_t alignment) {
-    void* mapped = MapPlaced(addr, len, prot, flags, alignment);
+void* MapAligned(void* addr, size_t len, int prot, int flags, size_t alignment, Placement placement = Placement::Lowest) {
+    void* mapped = MapPlaced(addr, len, prot, flags, alignment, placement);
 #if defined(__linux__)
     GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(mapped, len);
 #endif
@@ -922,7 +938,7 @@ int DoMunmap(void* addr, size_t len) {
     return 0;
 }
 
-int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
+static int ReserveVirtual_nid_no_patch(void** addr, size_t len, int flags, size_t alignment, Placement placement) {
     ValidateOutput(addr);
     if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
     const bool fixed = *addr != nullptr && (flags & GuestMapFixedFlag) != 0;
@@ -940,7 +956,7 @@ int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
         mutation.RequireAvailable(*addr, len);
     }
     if (fixed) mutation.RequireAvailable(*addr, len);
-    void* mapped = MapAligned(*addr, len, PROT_NONE, placementFlags, alignment);
+    void* mapped = MapAligned(*addr, len, PROT_NONE, placementFlags, alignment, placement);
     try {
         mutation.Add(mapped, len, false, false, false);
     } catch (...) {
@@ -951,6 +967,14 @@ int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
     RecordReservation(mapped, len);
     Trace("reserve %p+0x%zx flags=0x%x align=0x%zx", mapped, len, flags, alignment);
     return 0;
+}
+
+int DoReserveVirtual(void** addr, size_t len, int flags, size_t alignment) {
+    return ReserveVirtual_nid_no_patch(addr, len, flags, alignment, Placement::Lowest);
+}
+
+int DoReserveVirtualHighest_nid_no_patch(void** addr, size_t len, size_t alignment) {
+    return ReserveVirtual_nid_no_patch(addr, len, 0, alignment, Placement::Highest);
 }
 
 void CreateDirectMemoryBacking(int64_t start, size_t len, int memoryType) {

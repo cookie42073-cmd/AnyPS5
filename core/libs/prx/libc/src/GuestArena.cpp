@@ -61,6 +61,29 @@ public:
         return AllocateAtOrAbove(0, bytes, alignment);
     }
 
+    void* AllocateHighest(std::size_t bytes, std::size_t alignment) {
+        if (_base == 0) throw std::runtime_error("guest address space arena is unavailable");
+        if (bytes == 0) throw std::invalid_argument("invalid guest arena allocation size");
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) throw std::invalid_argument("invalid guest arena alignment");
+        std::lock_guard lock(_lock);
+        std::uintptr_t cursor = _base;
+        std::uintptr_t candidate = 0;
+        const auto consider = [&](std::uintptr_t end) {
+            if (end < cursor || bytes > end - cursor) return;
+            const auto address = (end - bytes) & ~(static_cast<std::uintptr_t>(alignment) - 1);
+            if (address >= cursor) candidate = address;
+        };
+        for (const auto& [start, end] : _used) {
+            consider(std::min(start, _end));
+            cursor = std::max(cursor, std::min(end, _end));
+            if (cursor == _end) break;
+        }
+        consider(_end);
+        if (candidate == 0) throw std::runtime_error("guest address space arena exhausted");
+        _used.emplace(candidate, candidate + bytes);
+        return reinterpret_cast<void*>(candidate);
+    }
+
     void* AllocateAtOrAbove(std::uintptr_t hint, std::size_t bytes, std::size_t alignment) {
         if (_base == 0) throw std::runtime_error("guest address space arena is unavailable");
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) throw std::invalid_argument("invalid guest arena alignment");
@@ -258,6 +281,10 @@ bool GuestArenaContains_nid_postfix(const void* pointer, std::size_t bytes) {
 
 void* GuestArenaAllocate_nid_postfix(std::size_t bytes, std::size_t alignment) {
     return Arena::Get().Allocate(bytes, alignment);
+}
+
+void* GuestArenaAllocateHighest_nid_postfix(std::size_t bytes, std::size_t alignment) {
+    return Arena::Get().AllocateHighest(bytes, alignment);
 }
 
 void* GuestArenaAllocateAtOrAbove_nid_postfix(std::uintptr_t hint, std::size_t bytes, std::size_t alignment) {

@@ -740,6 +740,13 @@ void TestAmmRangesAboveHintedMaps() {
     void* placed = span;
     Require(sceKernelMapFlexibleMemory(&placed, page, 3, 0) == 0 && placed == span);
 
+    void* upper = GuestArena::GuestArenaAllocateHighest_nid_postfix(page, page);
+    GuestArena::GuestArenaRelease_nid_postfix(upper, page);
+    void* blocker = upper;
+    Require(sceKernelMapFlexibleMemory(&blocker, page, 3, 0x90) == 0 && blocker == upper);
+    const auto blockerAddress = reinterpret_cast<std::uintptr_t>(blocker);
+    At(blockerAddress) = 0xA123;
+
     std::uint64_t start = 0;
     std::uint64_t end = 0;
     std::uint64_t multimapStart = 0;
@@ -748,7 +755,13 @@ void TestAmmRangesAboveHintedMaps() {
     std::uintptr_t arenaBase = 0;
     std::size_t arenaBytes = 0;
     GuestArena::GuestArenaRange_nid_postfix(&arenaBase, &arenaBytes);
-    Require(multimapEnd == arenaBase + arenaBytes);
+    Require(start >= arenaBase && multimapEnd <= arenaBase + arenaBytes);
+    Require(start % 0x200000 == 0 && end - start == (32ull << 30));
+    Require(multimapStart == end && multimapEnd - multimapStart == (32ull << 30));
+    Require(multimapEnd <= blockerAddress && At(blockerAddress) == 0xA123);
+#ifdef _WIN32
+    Require(!GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(start, multimapEnd - start));
+#endif
 
     for (std::uint64_t hint = heap + step; hint < heap + 4 * step; hint += step) {
         void* mapped = reinterpret_cast<void*>(hint);
@@ -758,6 +771,8 @@ void TestAmmRangesAboveHintedMaps() {
         Require(sceKernelMunmap(mapped, page) == 0);
     }
     Require(sceKernelMunmap(span, page) == 0);
+    Require(At(blockerAddress) == 0xA123);
+    Require(sceKernelMunmap(blocker, page) == 0);
 }
 
 void TestAmm() {
