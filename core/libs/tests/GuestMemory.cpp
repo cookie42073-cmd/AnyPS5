@@ -108,6 +108,40 @@ static void CheckReleaseFlexibleMemory() {
     Require(sceKernelMunmap(again, length) == 0);
 }
 
+static void CheckFlexibleReplacementAccounting() {
+    constexpr std::size_t page = 0x4000;
+    for (const std::size_t replacedPage : {std::size_t{0}, std::size_t{1}}) {
+        std::size_t before = 0;
+        std::size_t available = 0;
+        Require(sceKernelAvailableFlexibleMemorySize(&before) == 0);
+        void* mapped = nullptr;
+        Require(sceKernelMapFlexibleMemory(&mapped, 3 * page, 3, 0) == 0);
+        auto* bytes = static_cast<volatile unsigned char*>(mapped);
+        for (std::size_t index = 0; index < 3; ++index) bytes[index * page] = static_cast<unsigned char>(index + 1);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 3 * page);
+
+        void* replacement = static_cast<unsigned char*>(mapped) + replacedPage * page;
+        Require(sceKernelMapFlexibleMemory(&replacement, page, 3, 0x10) == 0);
+        Require(replacement == static_cast<unsigned char*>(mapped) + replacedPage * page);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 3 * page);
+        for (std::size_t index = 0; index < 3; ++index) Require(bytes[index * page] == (index == replacedPage ? 0 : index + 1));
+        bytes[replacedPage * page] = 7;
+        Require(sceKernelMapFlexibleMemory(&replacement, page, 3, 0x90) == static_cast<int>(0x8002000cu));
+        Require(sceKernelMapFlexibleMemory(&replacement, page + 1, 3, 0x10) == static_cast<int>(0x80020016u));
+        Require(bytes[replacedPage * page] == 7);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 3 * page);
+
+        Require(sceKernelMunmap(replacement, page) == 0);
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before - 2 * page);
+        for (std::size_t index = 0; index < 3; ++index) {
+            if (index == replacedPage) continue;
+            Require(bytes[index * page] == index + 1);
+            Require(sceKernelMunmap(static_cast<unsigned char*>(mapped) + index * page, page) == 0);
+        }
+        Require(sceKernelAvailableFlexibleMemorySize(&available) == 0 && available == before);
+    }
+}
+
 static void CheckNamedAndHintedMappings() {
     constexpr std::size_t length = 0x10000;
     void* first = nullptr;
@@ -1913,6 +1947,7 @@ int main() {
     CheckVirtualQuerySplitFlexibleRanges();
     CheckVirtualQueryForNonReadableGuestRange();
     CheckReleaseFlexibleMemory();
+    CheckFlexibleReplacementAccounting();
     CheckVirtualQueryPartialMunmap();
     CheckUnmapAcrossHoles();
     CheckUnmapHoleCallbacks();
