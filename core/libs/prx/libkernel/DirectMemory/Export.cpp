@@ -89,19 +89,7 @@ size_t _flexibleUsedLocked() {
     return used;
 }
 
-int _mapFlexible(void** addr, size_t len, int prot, int flags) {
-    std::lock_guard lock(g_flexibleLock);
-    if (len > FLEXIBLE_MEMORY_SIZE - std::min(FLEXIBLE_MEMORY_SIZE, _flexibleUsedLocked())) {
-        std::fprintf(stderr, "[memory] flexible memory exhausted: request 0x%zx with 0x%zx of 0x%zx in use\n", len, _flexibleUsedLocked(), static_cast<size_t>(FLEXIBLE_MEMORY_SIZE));
-        return SCE_KERNEL_ERROR_ENOMEM;
-    }
-    const int result = DoMapAnon(addr, len, prot, flags);
-    if (result == 0) g_flexibleRanges[reinterpret_cast<uintptr_t>(*addr)] = len;
-    return result;
-}
-
-void _releaseFlexible(uintptr_t start, size_t len) {
-    std::lock_guard lock(g_flexibleLock);
+void _releaseFlexibleLocked(uintptr_t start, size_t len) {
     const uintptr_t end = start + len;
     auto it = g_flexibleRanges.upper_bound(start);
     if (it != g_flexibleRanges.begin()) --it;
@@ -113,6 +101,45 @@ void _releaseFlexible(uintptr_t start, size_t len) {
         if (rangeStart < start) g_flexibleRanges[rangeStart] = start - rangeStart;
         if (rangeEnd > end) g_flexibleRanges[end] = rangeEnd - end;
     }
+}
+
+size_t _flexibleReplacementBytesLocked(void** addr, size_t len, int prot, int flags) {
+    constexpr int GuestMapFixed = 0x10;
+    constexpr int GuestMapNoCoalesce = 0x400000;
+    if (!addr || !*addr || (flags & GuestMapFixed) == 0 || (flags & ~(GuestMapFixed | GuestMapNoCoalesce)) != 0 || (prot & ~0x3F7) != 0) return 0;
+    const auto start = reinterpret_cast<uintptr_t>(*addr);
+    if (len == 0 || (len & (PS5_PAGE_SIZE - 1)) != 0 || (start & (PS5_PAGE_SIZE - 1)) != 0 || len > std::numeric_limits<uintptr_t>::max() - start) return 0;
+    const auto end = start + len;
+    size_t replaced = 0;
+    auto it = g_flexibleRanges.upper_bound(start);
+    if (it != g_flexibleRanges.begin()) --it;
+    for (; it != g_flexibleRanges.end() && it->first < end; ++it) {
+        const auto rangeEnd = it->first + it->second;
+        if (rangeEnd > start) replaced += std::min(end, rangeEnd) - std::max(start, it->first);
+    }
+    return replaced;
+}
+
+int _mapFlexible(void** addr, size_t len, int prot, int flags) {
+    std::lock_guard lock(g_flexibleLock);
+    const auto used = _flexibleUsedLocked();
+    const auto added = len - _flexibleReplacementBytesLocked(addr, len, prot, flags);
+    if (added > FLEXIBLE_MEMORY_SIZE - std::min(FLEXIBLE_MEMORY_SIZE, used)) {
+        std::fprintf(stderr, "[memory] flexible memory exhausted: request 0x%zx with 0x%zx of 0x%zx in use\n", len, used, static_cast<size_t>(FLEXIBLE_MEMORY_SIZE));
+        return SCE_KERNEL_ERROR_ENOMEM;
+    }
+    const int result = DoMapAnon(addr, len, prot, flags);
+    if (result == 0) {
+        const auto start = reinterpret_cast<uintptr_t>(*addr);
+        _releaseFlexibleLocked(start, len);
+        g_flexibleRanges[start] = len;
+    }
+    return result;
+}
+
+void _releaseFlexible(uintptr_t start, size_t len) {
+    std::lock_guard lock(g_flexibleLock);
+    _releaseFlexibleLocked(start, len);
 }
 
 }
