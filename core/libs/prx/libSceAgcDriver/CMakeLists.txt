@@ -934,6 +934,8 @@ target_include_directories(agc_driver_prepared_publication_tests PRIVATE $<TARGE
 target_include_directories(agc_driver_prepared_graphics_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(agc_driver_interpolation_modes_tests PRIVATE shader_recompiler_agc_driver)
 
+target_include_directories(agc_driver_prepared_unregistered_graphics_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
+
 target_include_directories(agc_driver_prepared_shaders_tests PRIVATE
         $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>
 )
@@ -1183,7 +1185,7 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(linear_display_buffer_tests ${LIBS_INCLUDE_DIR}/tests/LinearDisplayBuffer.cpp)
-    target_include_directories(linear_display_buffer_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_include_directories(linear_display_buffer_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/Vulkan-Headers/include)
     target_link_libraries(linear_display_buffer_tests PRIVATE libSceAgcDriver libc)
     configure_windows_unwind(linear_display_buffer_tests)
     add_test(NAME linear_display_buffer COMMAND linear_display_buffer_tests)
@@ -1482,6 +1484,19 @@ if(BUILD_TESTING)
     add_test(NAME image_msaa_load COMMAND image_msaa_load_tests)
     if(WIN32)
         set_tests_properties(image_msaa_load PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+add_test_executable(agc_embedded_vertex_fetch_aliasing_tests EXCLUDE_FROM_ALL tests/EmbeddedVertexFetchAliasing.cpp)
+target_link_libraries(agc_embedded_vertex_fetch_aliasing_tests PRIVATE shader_recompiler_agc_driver libc)
+set_target_properties(agc_embedded_vertex_fetch_aliasing_tests PROPERTIES CXX_EXTENSIONS OFF)
+configure_windows_unwind(agc_embedded_vertex_fetch_aliasing_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_embedded_vertex_fetch_aliasing_tests PROPERTIES EXCLUDE_FROM_ALL OFF)
+    add_test(NAME agc_embedded_vertex_fetch_aliasing COMMAND agc_embedded_vertex_fetch_aliasing_tests)
+    if(WIN32)
+        set_tests_properties(agc_embedded_vertex_fetch_aliasing PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()
