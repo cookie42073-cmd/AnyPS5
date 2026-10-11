@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <future>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -240,6 +241,65 @@ void TestFullBuffer() {
     Require(sceAmprCommandBufferConstructor(&unbound) == 0);
     Require(sceAmprCommandBufferPushMarker(&unbound, marker) == bufferFull);
     Require(sceAmprCommandBufferPopMarker(&unbound) == bufferFull);
+}
+
+void TestMalformedSubmission() {
+    std::uint64_t output = 0x1234;
+    Apr::WriteAddressCommand write{{Apr::Opcode::WriteAddress, sizeof(Apr::CommandHeader)}, reinterpret_cast<std::uintptr_t>(&output), 0x5678, 0, 0};
+    const auto requireRejected = [](Apr::CommandBufferObject buffer) {
+        bool rejected = false;
+        try {
+            sceKernelAprSubmitCommandBuffer(&buffer, 0);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        Require(rejected);
+    };
+    Apr::CommandBufferObject buffer{reinterpret_cast<std::uint8_t*>(&write), sizeof(write), sizeof(Apr::CommandHeader), 1, Apr::BufferType::Generic, 0};
+    requireRejected(buffer);
+    Require(output == 0x1234);
+    buffer.offset = sizeof(write);
+    requireRejected(buffer);
+    Require(output == 0x1234);
+
+    const std::array payloadOpcodes{
+        Apr::Opcode::ReadFile, Apr::Opcode::ReadFileGather, Apr::Opcode::ReadFileScatter, Apr::Opcode::ReadFileGatherScatter,
+        Apr::Opcode::AmmMap, Apr::Opcode::AmmMapDirect, Apr::Opcode::AmmUnmap, Apr::Opcode::AmmRemap, Apr::Opcode::AmmMultiMap,
+        Apr::Opcode::AmmRemapIntoPrt, Apr::Opcode::AmmMapAsPrt, Apr::Opcode::AmmUnmapToPrt, Apr::Opcode::AmmAllocatePaForPrt,
+        Apr::Opcode::AmmModifyProtect, Apr::Opcode::AmmModifyMtypeProtect, Apr::Opcode::WriteCounter,
+        Apr::Opcode::WaitOnAddress, Apr::Opcode::WaitOnCounter, Apr::Opcode::WriteKernelEventQueue,
+        Apr::Opcode::WriteAddressFromTimeCounter, Apr::Opcode::WriteAddressFromCounter, Apr::Opcode::WriteAddressFromCounterPair
+    };
+    for (const auto opcode : payloadOpcodes) {
+        Apr::CommandHeader header{opcode, sizeof(Apr::CommandHeader)};
+        requireRejected({reinterpret_cast<std::uint8_t*>(&header), sizeof(header), sizeof(header), 1, Apr::BufferType::Generic, 0});
+    }
+
+    Apr::CommandHeader header{Apr::Opcode::Nop, sizeof(Apr::CommandHeader)};
+    for (std::uint32_t bytes = 1; bytes < sizeof(header); ++bytes) {
+        requireRejected({reinterpret_cast<std::uint8_t*>(&header), sizeof(header), bytes, 1, Apr::BufferType::Generic, 0});
+        header.bytes = bytes;
+        requireRejected({reinterpret_cast<std::uint8_t*>(&header), sizeof(header), sizeof(header), 1, Apr::BufferType::Generic, 0});
+    }
+    header.bytes = sizeof(header) + 1;
+    requireRejected({reinterpret_cast<std::uint8_t*>(&header), sizeof(header), sizeof(header), 1, Apr::BufferType::Generic, 0});
+    header.bytes = sizeof(header);
+    requireRejected({reinterpret_cast<std::uint8_t*>(&header), sizeof(header) - 1, sizeof(header), 1, Apr::BufferType::Generic, 0});
+    requireRejected({nullptr, sizeof(header), sizeof(header), 1, Apr::BufferType::Generic, 0});
+
+    std::array<Apr::CommandHeader, 2> overflow{{{Apr::Opcode::Nop, sizeof(header)}, {Apr::Opcode::Nop, 0xFFFFFFF8u}}};
+    requireRejected({reinterpret_cast<std::uint8_t*>(overflow.data()), sizeof(overflow), sizeof(overflow), 2, Apr::BufferType::Generic, 0});
+
+    std::uint64_t prefixOutput = 0;
+    Apr::WriteAddressCommand prefix{{Apr::Opcode::WriteAddress, sizeof(Apr::WriteAddressCommand)}, reinterpret_cast<std::uintptr_t>(&prefixOutput), 0x9ABC, 0, 0};
+    std::array<std::uint8_t, 2 * sizeof(write)> commands{};
+    std::memcpy(commands.data(), &prefix, sizeof(prefix));
+    std::memcpy(commands.data() + sizeof(prefix), &write, sizeof(write));
+    requireRejected({commands.data(), commands.size(), commands.size(), 2, Apr::BufferType::Generic, 0});
+    Require(prefixOutput == 0x9ABC && output == 0x1234);
+
+    Apr::CommandBufferObject empty{nullptr, 0, 0, 0, Apr::BufferType::Generic, 0};
+    Require(sceKernelAprSubmitCommandBuffer(&empty, 0) == 0);
 }
 
 void TestSubmission() {
@@ -977,6 +1037,7 @@ int main() {
     TestRecording(std::string(300, 'a'));
     TestRejectedArguments();
     TestFullBuffer();
+    TestMalformedSubmission();
     TestSubmission();
     TestKernelEventQueue();
     TestWaits();

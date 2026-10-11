@@ -237,7 +237,8 @@ bool _waitSatisfied(std::uint32_t compare, std::uint64_t value, std::uint64_t re
 }
 
 template<class TCommand>
-TCommand _read(const Apr::CommandBufferObject& buffer, std::uint32_t cursor) {
+TCommand _read(const Apr::CommandBufferObject& buffer, std::uint32_t cursor, std::uint32_t bytes) {
+    if (bytes < sizeof(TCommand)) throw std::runtime_error("APR: truncated command payload");
     TCommand command;
     std::memcpy(&command, buffer.base + cursor, sizeof(command));
     return command;
@@ -515,13 +516,15 @@ void _readResolved(Apr::Opcode opcode, Apr::ReadFileCommand command, ReadCursor&
 }
 
 void _execute(const Apr::CommandBufferObject& buffer) {
+    if (buffer.offset > buffer.size || (buffer.offset != 0 && !buffer.base)) throw std::runtime_error("APR: invalid command buffer bounds");
     std::uint32_t cursor = 0;
     ReadCursor read;
     while (cursor < buffer.offset) {
-        if (cursor + sizeof(Apr::CommandHeader) > buffer.offset) throw std::runtime_error("APR: truncated command buffer");
+        const auto remaining = buffer.offset - cursor;
+        if (remaining < sizeof(Apr::CommandHeader)) throw std::runtime_error("APR: truncated command buffer");
         Apr::CommandHeader header;
         std::memcpy(&header, buffer.base + cursor, sizeof(header));
-        if (header.bytes < sizeof(header) || cursor + header.bytes > buffer.offset) throw std::runtime_error("APR: malformed command");
+        if (header.bytes < sizeof(header) || header.bytes > remaining) throw std::runtime_error("APR: malformed command");
         switch (header.opcode) {
         case Apr::Opcode::Nop:
         case Apr::Opcode::PushMarker:
@@ -532,53 +535,51 @@ void _execute(const Apr::CommandBufferObject& buffer) {
         case Apr::Opcode::ReadFileGather:
         case Apr::Opcode::ReadFileScatter:
         case Apr::Opcode::ReadFileGatherScatter:
-            _readResolved(header.opcode, _read<Apr::ReadFileCommand>(buffer, cursor), read);
+            _readResolved(header.opcode, _read<Apr::ReadFileCommand>(buffer, cursor, header.bytes), read);
             break;
         case Apr::Opcode::ResetGatherScatterState:
             read = {};
             break;
         case Apr::Opcode::AmmMap:
         case Apr::Opcode::AmmMapDirect:
-            _ammMap(_read<Apr::AmmMapCommand>(buffer, cursor), header.opcode == Apr::Opcode::AmmMapDirect);
+            _ammMap(_read<Apr::AmmMapCommand>(buffer, cursor, header.bytes), header.opcode == Apr::Opcode::AmmMapDirect);
             break;
         case Apr::Opcode::AmmUnmap:
-            _ammUnmap(_read<Apr::AmmUnmapCommand>(buffer, cursor));
+            _ammUnmap(_read<Apr::AmmUnmapCommand>(buffer, cursor, header.bytes));
             break;
         case Apr::Opcode::AmmRemap:
         case Apr::Opcode::AmmMultiMap:
-            _ammRemap(_read<Apr::AmmRemapCommand>(buffer, cursor), header.opcode == Apr::Opcode::AmmMultiMap, false);
+            _ammRemap(_read<Apr::AmmRemapCommand>(buffer, cursor, header.bytes), header.opcode == Apr::Opcode::AmmMultiMap, false);
             break;
         case Apr::Opcode::AmmRemapIntoPrt:
-            _ammRemap(_read<Apr::AmmRemapCommand>(buffer, cursor), false, true);
+            _ammRemap(_read<Apr::AmmRemapCommand>(buffer, cursor, header.bytes), false, true);
             break;
         case Apr::Opcode::AmmMapAsPrt:
-            _ammMapAsPrt(_read<Apr::AmmUnmapCommand>(buffer, cursor));
+            _ammMapAsPrt(_read<Apr::AmmUnmapCommand>(buffer, cursor, header.bytes));
             break;
         case Apr::Opcode::AmmUnmapToPrt:
-            _ammUnmapToPrt(_read<Apr::AmmUnmapCommand>(buffer, cursor));
+            _ammUnmapToPrt(_read<Apr::AmmUnmapCommand>(buffer, cursor, header.bytes));
             break;
         case Apr::Opcode::AmmAllocatePaForPrt:
-            _ammAllocatePrt(_read<Apr::AmmProtectCommand>(buffer, cursor));
+            _ammAllocatePrt(_read<Apr::AmmProtectCommand>(buffer, cursor, header.bytes));
             break;
         case Apr::Opcode::AmmModifyProtect:
         case Apr::Opcode::AmmModifyMtypeProtect:
-            _ammProtect(_read<Apr::AmmProtectCommand>(buffer, cursor), header.opcode == Apr::Opcode::AmmModifyMtypeProtect);
+            _ammProtect(_read<Apr::AmmProtectCommand>(buffer, cursor, header.bytes), header.opcode == Apr::Opcode::AmmModifyMtypeProtect);
             break;
         case Apr::Opcode::MapEnd:
             break;
         case Apr::Opcode::WriteAddress: {
-            Apr::WriteAddressCommand command;
-            std::memcpy(&command, buffer.base + cursor, sizeof(command));
-            _writeAddress(command);
+            _writeAddress(_read<Apr::WriteAddressCommand>(buffer, cursor, header.bytes));
             break;
         }
         case Apr::Opcode::WriteCounter: {
-            _writeCounter(_read<Apr::WriteCounterCommand>(buffer, cursor));
+            _writeCounter(_read<Apr::WriteCounterCommand>(buffer, cursor, header.bytes));
             break;
         }
         case Apr::Opcode::WaitOnAddress:
         case Apr::Opcode::WaitOnCounter: {
-            const auto command = _read<Apr::WaitCommand>(buffer, cursor);
+            const auto command = _read<Apr::WaitCommand>(buffer, cursor, header.bytes);
             const bool counter = header.opcode == Apr::Opcode::WaitOnCounter;
             const std::uint32_t unused = counter ? 64u - _counterField(command.access).bits : 0u;
             const auto current = [&]() -> std::uint64_t {
@@ -590,18 +591,18 @@ void _execute(const Apr::CommandBufferObject& buffer) {
             break;
         }
         case Apr::Opcode::WriteKernelEventQueue: {
-            const auto command = _read<Apr::WriteKernelEventQueueCommand>(buffer, cursor);
+            const auto command = _read<Apr::WriteKernelEventQueueCommand>(buffer, cursor, header.bytes);
             EqueueTriggerEvent_nid_postfix(static_cast<KernelEqueue>(command.equeue), static_cast<uintptr_t>(command.ident), EVFILT_AMPR, reinterpret_cast<void*>(command.data));
             break;
         }
         case Apr::Opcode::WriteAddressFromTimeCounter: {
-            const auto command = _read<Apr::WriteAddressFromCounterCommand>(buffer, cursor);
+            const auto command = _read<Apr::WriteAddressFromCounterCommand>(buffer, cursor, header.bytes);
             std::atomic_ref<std::uint64_t>(*reinterpret_cast<std::uint64_t*>(command.address)).store(sceKernelGetProcessTimeCounter(), std::memory_order_release);
             break;
         }
         case Apr::Opcode::WriteAddressFromCounter:
         case Apr::Opcode::WriteAddressFromCounterPair: {
-            const auto command = _read<Apr::WriteAddressFromCounterCommand>(buffer, cursor);
+            const auto command = _read<Apr::WriteAddressFromCounterCommand>(buffer, cursor, header.bytes);
             std::uint64_t value = _counter(command.counter0);
             if (header.opcode == Apr::Opcode::WriteAddressFromCounterPair) value |= static_cast<std::uint64_t>(_counter(command.counter1)) << 32u;
             std::atomic_ref<std::uint64_t>(*reinterpret_cast<std::uint64_t*>(command.address)).store(value, std::memory_order_release);
