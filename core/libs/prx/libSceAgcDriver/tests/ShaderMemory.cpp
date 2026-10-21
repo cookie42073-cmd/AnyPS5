@@ -9363,13 +9363,14 @@ void verifyBdaReadFallbackFunctions() {
             const auto adjacent = compile(5u, barrier, coherent, 4u);
             std::map<std::uint32_t, std::string> names;
             std::map<std::string, std::uint32_t> definitions;
-            const auto reader = std::string("read_bda_dword_bytes") + (barrier ? "" : "_stop") + (coherent ? "_coherent" : "");
-            const auto span = std::string("read_bda_span") + (barrier ? "" : "_stop") + (coherent ? "_coherent" : "");
+            const auto reader = std::string("read_bda_dword_bytes_stop") + (coherent ? "_coherent" : "");
+            const auto span = std::string("read_bda_span_stop") + (coherent ? "_coherent" : "");
             const auto loader = std::string("load_bda_span") + (coherent ? "_coherent" : "");
             std::string function;
             std::size_t compareExchanges = 0;
             std::size_t mainLookups = 0;
             std::size_t mainProbes = 0;
+            std::size_t mainReturns = 0;
             std::size_t spanCalls = 0;
             std::size_t spanLoads = 0;
             std::size_t spanLoaderCalls = 0;
@@ -9392,6 +9393,7 @@ void verifyBdaReadFallbackFunctions() {
                     }
                 }
                 if (op == spv::OpAtomicCompareExchange) ++compareExchanges;
+                if (op == spv::OpReturn && function == "main") ++mainReturns;
                 if (op == spv::OpFunctionCall && function == "main" && names[five[cursor + 3]] == "get_bda_pointer") ++mainLookups;
                 if (op == spv::OpFunctionCall && function == "main") {
                     const auto& callee = names[five[cursor + 3]];
@@ -9420,6 +9422,7 @@ void verifyBdaReadFallbackFunctions() {
             require(readerLookups == 1u, "BDA read functions: the byte read does not look up its bytes once, in a loop");
             require(mainProbes == 0u, "BDA read functions: a read site probes or reads bytes outside its span read function");
             require(spanCalls == 5u, "BDA read functions: a read site does not call its span read function once");
+            require(!barrier || mainReturns == 1u, "BDA read functions: a fault can return from a barrier invocation");
             require(five.size() - one.size() < 4u * 150u, "BDA read functions: a read site takes 150 SPIR-V words or more");
             std::size_t adjacentSpanCalls = 0;
             names.clear();
