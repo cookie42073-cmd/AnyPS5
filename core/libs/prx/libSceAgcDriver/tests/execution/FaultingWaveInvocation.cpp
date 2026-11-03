@@ -97,6 +97,7 @@ int main() {
         };
         request.useCache = false;
         const auto result = ShaderRecompiler::Recompile(request);
+        std::printf("qualification mode: hostSubgroupSize=%u fullSubgroups=%u workgroupMemoryDwords=%u faultingLane=%u\n", result.hostSubgroupSize, static_cast<unsigned>(result.fullSubgroups), result.workgroupMemoryDwords, FaultingLane);
         device->Dispatch(result, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
         device->WaitIdle();
         std::uint32_t passes = 0;
