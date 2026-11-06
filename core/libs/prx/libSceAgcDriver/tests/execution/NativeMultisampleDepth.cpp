@@ -1442,17 +1442,32 @@ bool DepthSupported(const Context& context, VkFormat format, std::uint32_t fragm
     return result == VK_SUCCESS && (properties.sampleCounts & fragments) != 0u && (context.limits.framebufferDepthSampleCounts & fragments) != 0u;
 }
 
-void CheckDrawFeedback() {
+void CheckDrawFeedback(VkFormat format = VK_FORMAT_D32_SFLOAT) {
     const auto device = OpenVulkanTestDevice();
     Require(device != nullptr, "native depth draw feedback requires Vulkan");
     constexpr VkExtent2D extent{5u, 3u};
     constexpr std::uint32_t samples = 4u;
+    const bool withStencil = format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    const auto context = device->graphicsContext();
+    if (withStencil && (!DepthSupported(context, format, samples) || (context.limits.framebufferStencilSampleCounts & samples) == 0u)) {
+        std::puts("Native D32S8 feedback cases checked=0 unavailable=1: partial coverage, sampled four-sample depth/stencil unsupported");
+        return;
+    }
     const auto depthBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 4u, samples));
     TargetMemory memory(depthBytes), metadata(65536u);
+    std::unique_ptr<TargetMemory> stencil, testedStencil;
+    if (withStencil) {
+        const auto stencilBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 1u, samples));
+        stencil = std::make_unique<TargetMemory>(stencilBytes);
+        testedStencil = std::make_unique<TargetMemory>(stencilBytes);
+        std::memset(stencil->Data(), 0, stencilBytes);
+        std::memset(testedStencil->Data(), 0, stencilBytes);
+    }
     std::memset(metadata.Data(), 0, 65536u);
-    DepthTarget depth{memory.Address(), 0u, extent, VK_FORMAT_D32_SFLOAT, 0.0f, 0u, metadata.Address(), false, samples};
+    DepthTarget depth{memory.Address(), stencil ? stencil->Address() : 0u, extent, format, 0.0f, 0u, metadata.Address(), false, samples};
     depth.depthSwizzle = 24u;
     depth.iterate256 = depth.htilePipeAligned = true;
+    depth.htileDepthOnly = withStencil;
     struct Cleanup {
         AgcDriver::VulkanDevice& device;
         ~Cleanup() { device.WaitIdle(); ClearCachedTextures(device.Device()); ClearDepthSurfaces(device.Device()); }
@@ -1482,8 +1497,10 @@ void CheckDrawFeedback() {
     device->Draw(state, draw, initial);
     device->WaitIdle();
     std::array<std::byte, 1> probe{};
-    TargetRefuses([&] { AgcDriver::GuestMemory::Read(depth.address, probe); }, "sample-preserving guest publication");
-    Require(DepthSurfaceAt(depth.address), "a refused guest read retired a native depth surface a draw wrote");
+    if (!withStencil) {
+        TargetRefuses([&] { AgcDriver::GuestMemory::Read(depth.address, probe); }, "sample-preserving guest publication");
+        Require(DepthSurfaceAt(depth.address), "a refused guest read retired a native depth surface a draw wrote");
+    }
     reader.spirv = DepthFeedbackFragmentShader(binding, true);
     reader.variantId = 3u;
     const auto words = DepthSampleWords(depth);
@@ -1499,6 +1516,7 @@ void CheckDrawFeedback() {
     reader.bindings.push_back(std::move(image));
     const std::array<CompiledShader, 2> shaders{{{ShaderRecompiler::ShaderStage::Vertex, &vertex, 0u}, {ShaderRecompiler::ShaderStage::Fragment, &reader, pixelOffset}}};
     TargetRefuses([&] { device->Draw(state, draw, shaders); }, "sampling a native multisampled depth target the draw attaches");
+    if (withStencil) Require(DepthSurfaceAt(depth.address), "feedback refusal retired the written native D32S8 surface");
     device->WaitIdle();
     TargetMemory testedMemory(depthBytes), testedMetadata(65536u);
     std::memset(testedMetadata.Data(), 0, 65536u);
@@ -1507,6 +1525,7 @@ void CheckDrawFeedback() {
     auto tested = depth;
     tested.address = testedMemory.Address();
     tested.htileAddress = testedMetadata.Address();
+    if (testedStencil) tested.stencilAddress = testedStencil->Address();
     state.depth = tested;
     state.depthWrite = false;
     device->Draw(state, draw, initial);
@@ -1515,7 +1534,8 @@ void CheckDrawFeedback() {
     AgcDriver::GuestMemory::Read(tested.address + depthBytes - 1u, probe);
     Require(probe[0] == guestByte(depthBytes - 1u), "a guest read after a depth-test-only draw did not return its guest bytes");
     Require(!DepthSurfaceAt(tested.address), "a guest read left a native depth surface only depth-tested resident");
-    std::puts("Native depth feedback refused through the draw resource path; a written surface refused and a depth-tested one retired on guest read");
+    if (withStencil) std::puts("Native D32S8 feedback cases checked=1 unavailable=0: draw feedback refused, written owner retained, depth-tested owner retired on guest read");
+    else std::puts("Native depth feedback refused through the draw resource path; a written surface refused and a depth-tested one retired on guest read");
 }
 
 void CheckDepthAttachmentAlias() {
@@ -3421,6 +3441,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         CheckDrawFeedback();
+        if (argc == 1) CheckDrawFeedback(VK_FORMAT_D32_SFLOAT_S8_UINT);
         if (argc == 1) CheckDepthAttachmentAlias();
         if (argc == 1) CheckStorageAliasRetirement();
         std::unique_lock lock(AgcDriver::GuestMemory::GpuMutex());
