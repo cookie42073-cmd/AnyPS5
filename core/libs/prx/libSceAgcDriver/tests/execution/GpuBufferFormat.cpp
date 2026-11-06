@@ -8,6 +8,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
 #include <algorithm>
 #include <array>
@@ -17,6 +20,8 @@
 #include <iostream>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 
@@ -69,8 +74,68 @@ public:
         return std::span<std::uint32_t, OutputStride * Lanes>(reinterpret_cast<std::uint32_t*>(block + 512), OutputStride * Lanes);
     }
 
+    std::span<std::uint32_t, BlockBytes / sizeof(std::uint32_t)> Words() {
+        return std::span<std::uint32_t, BlockBytes / sizeof(std::uint32_t)>(reinterpret_cast<std::uint32_t*>(block), BlockBytes / sizeof(std::uint32_t));
+    }
+
 private:
     std::uint8_t* block = nullptr;
+};
+
+class StderrCapture {
+public:
+    StderrCapture() {
+        std::fflush(stderr);
+        file = std::tmpfile();
+        Require(file != nullptr, "gpu buffer format: cannot capture the fault report");
+#ifdef _WIN32
+        saved = _dup(_fileno(stderr));
+        const auto redirected = saved < 0 ? -1 : _dup2(_fileno(file), _fileno(stderr));
+#else
+        saved = dup(fileno(stderr));
+        const auto redirected = saved < 0 ? -1 : dup2(fileno(file), fileno(stderr));
+#endif
+        if (redirected < 0) {
+            Restore();
+            std::fclose(file);
+            Require(false, "gpu buffer format: cannot redirect stderr to capture the fault report");
+        }
+    }
+
+    ~StderrCapture() {
+        Restore();
+        std::fclose(file);
+    }
+
+    StderrCapture(const StderrCapture&) = delete;
+    StderrCapture& operator=(const StderrCapture&) = delete;
+
+    std::string Finish() {
+        Restore();
+        std::rewind(file);
+        std::string text;
+        std::array<char, 4096> buffer{};
+        for (std::size_t read = 0; (read = std::fread(buffer.data(), 1, buffer.size(), file)) != 0;) text.append(buffer.data(), read);
+        std::fwrite(text.data(), 1, text.size(), stderr);
+        return text;
+    }
+
+private:
+    void Restore() {
+        if (saved < 0) return;
+        std::fflush(stderr);
+#ifdef _WIN32
+        _dup2(saved, _fileno(stderr));
+        _close(saved);
+#else
+        dup2(saved, fileno(stderr));
+        close(saved);
+#endif
+        saved = -1;
+    }
+
+    std::FILE* file = nullptr;
+    int saved = -1;
 };
 
 alignas(256) constexpr std::array<std::uint32_t, 29> Code{
@@ -646,12 +711,160 @@ void Run(AgcDriver::VulkanDevice& device, const ShaderRecompiler::RecompileResul
     device.WaitIdle();
 }
 
+constexpr std::uint32_t FaultThreads = 64u;
+constexpr std::uint32_t FaultHalfThreads = FaultThreads / 2u;
+constexpr std::uint32_t FaultDataBase = 0x1000u;
+constexpr std::uint32_t FaultOutputBase = 0x8000u;
+constexpr std::uint32_t FaultMarker = 0x2468ace1u;
+
+std::vector<std::uint32_t> BarrierCode(bool store, bool faultUpper) {
+    std::vector<std::uint32_t> code{
+        0xe0340000u, 0x80010200u, 0xbf8c3f70u, 0x7e140502u, 0x7e160503u,
+        0x34020082u, 0x34280082u,
+    };
+    if (store) {
+        code.insert(code.end(), {
+            0x7e1002ffu, FaultMarker,
+            faultUpper ? 0x7d8600a0u : 0x7d8800a0u, 0xbe98246au,
+            0xe0101000u, 0x80020801u, 0xbf8c3f70u, 0xbefe0418u,
+        });
+    } else {
+        code.insert(code.end(), {0xe0001000u, 0x80020801u, 0xbf8c3f70u});
+    }
+    code.insert(code.end(), {0xbf8a0000u, 0xe0701000u, 0x80030814u, 0xbf8c3f70u, 0xbf810000u});
+    return code;
 }
 
-int main() {
+std::size_t FormattedHelperCalls(const ShaderRecompiler::RecompileResult& shader, bool store) {
+    const auto name = store ? "store_formatted_gpu_buffer_x1" : "load_formatted_gpu_buffer_x1";
+    const auto words = shader.spirv.Words();
+    std::uint32_t function = 0u;
+    for (std::size_t offset = 5; offset < words.size();) {
+        const auto count = words[offset] >> spv::WordCountShift;
+        Require(count != 0u && count <= words.size() - offset, "gpu buffer format: malformed barrier SPIR-V");
+        if ((words[offset] & spv::OpCodeMask) == spv::OpName && count >= 3u && std::string_view(reinterpret_cast<const char*>(&words[offset + 2u])) == name) {
+            Require(function == 0u, "gpu buffer format: the barrier program has duplicate formatted helpers");
+            function = words[offset + 1u];
+        }
+        offset += count;
+    }
+    Require(function != 0u, "gpu buffer format: the barrier program does not use the runtime formatted helper");
+    std::size_t calls = 0u;
+    for (std::size_t offset = 5; offset < words.size();) {
+        const auto count = words[offset] >> spv::WordCountShift;
+        if ((words[offset] & spv::OpCodeMask) == spv::OpFunctionCall && count >= 4u && words[offset + 3u] == function) ++calls;
+        offset += count;
+    }
+    return calls;
+}
+
+void RunBarrierFault(AgcDriver::VulkanDevice& device, GuestBlock& guest, bool store, bool faultUpper, bool fault, bool nonspanning) {
+    auto memory = guest.Words();
+    for (std::size_t word = 0; word < memory.size(); ++word) memory[word] = 0x51000000u + static_cast<std::uint32_t>(word) * 0x00010203u;
+    std::fill_n(memory.begin() + FaultOutputBase / 4u, FaultThreads, Untouched);
+    memory[0] = FaultThreads * 4u;
+    memory[1] = store && fault ? InvalidFormats[0] : 0x31016facu;
+    memory[2] = 0u;
+    memory[3] = 0u;
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(memory.data()));
+    auto input = address + FaultDataBase;
+    if (!store && fault) {
+        const auto halfBytes = FaultHalfThreads * 4u;
+        input = faultUpper ? address + BlockBytes - halfBytes : address - halfBytes;
+        const auto unmapped = faultUpper ? address + BlockBytes : input;
+        Require(!GuestAllocations::Mutation().Overlaps(reinterpret_cast<const void*>(unmapped), halfBytes), "gpu buffer format: the barrier fault input overlaps a registered allocation");
+    }
+    const auto output = address + FaultOutputBase;
+    const std::array<std::uint32_t, 16> userData{
+        0u, 0u, 0u, 0u,
+        static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), 16u, 0x31016facu,
+        static_cast<std::uint32_t>(input), static_cast<std::uint32_t>((input >> 32u) & 0xffffu), 0u, 0u,
+        static_cast<std::uint32_t>(output), static_cast<std::uint32_t>((output >> 32u) & 0xffffu), FaultThreads * 4u, 0x31016facu,
+    };
+    const auto program = BarrierCode(store, faultUpper);
+    const std::span<const std::uint32_t> code(program);
+    const std::array<ShaderRecompiler::MemoryRegion, 1> regions{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
+    const ShaderRecompiler::ShaderComputeStageInfo compute{{FaultThreads, 1u, 1u}, 0u, {false, false, false}, false, 1};
+    ShaderRecompiler::RecompileRequest request{
+        {ShaderStage::Compute, reinterpret_cast<std::uintptr_t>(code.data()), code, 0u, {}},
+        {64u, 0u, userData, compute, std::nullopt, std::nullopt, regions},
+        device.Target(),
+        {0, 0, 0, 128}
+    };
+    request.useCache = false;
+    const auto shader = ShaderRecompiler::Recompile(request);
+    Require(shader.hostSubgroupSize == 32u, "gpu buffer format: the barrier program did not use 32-lane host subgroups");
+    Require(!nonspanning || !shader.fullSubgroups, "gpu buffer format: APS5_NO_SPANNED_WAVE did not select the two-lane path");
+    const auto calls = FormattedHelperCalls(shader, store);
+    Require(calls == (shader.fullSubgroups ? 1u : 2u), "gpu buffer format: the barrier program did not share its formatted helper across the expected lane calls");
+    std::vector<std::uint32_t> expected(memory.begin(), memory.end());
+    for (std::uint32_t lane = 0u; lane < FaultThreads; ++lane) {
+        const bool selected = (lane >= FaultHalfThreads) == faultUpper;
+        if (store && !fault && selected) expected[FaultDataBase / 4u + lane] = FaultMarker;
+        if (fault && selected) continue;
+        const auto value = store ? FaultMarker : memory[static_cast<std::size_t>((input + lane * 4u - address) / 4u)];
+        expected[FaultOutputBase / 4u + lane] = value;
+    }
+    const auto label = std::string("gpu buffer format: barrier ") + (store ? "store" : "load") + (faultUpper ? " upper" : " lower") + (fault ? " fault" : " control");
+    std::printf("%s hostSubgroupSize=%u fullSubgroups=%u helperCalls=%zu\n", label.c_str(), shader.hostSubgroupSize, static_cast<unsigned>(shader.fullSubgroups), calls);
+    std::string failure;
+    StderrCapture log;
+    try {
+        device.Dispatch(shader, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
+        device.WaitIdle();
+    } catch (const std::exception& error) {
+        failure = error.what();
+    }
+    const auto deferred = log.Finish();
+    Require(failure.empty() || (fault && failure.find("BDA access failed:") != std::string::npos), label + ": " + failure);
+    const auto reports = failure + '\n' + deferred;
+    const auto reportStart = reports.find("BDA access failed:");
+    if (fault) {
+        Require(reportStart != std::string::npos, label + ": no BDA fault report: " + reports);
+        const auto reportEnd = reports.find('\n', reportStart);
+        const auto report = reports.substr(reportStart, reportEnd == std::string::npos ? std::string::npos : reportEnd - reportStart);
+        unsigned long long faultAddress = 0u;
+        unsigned int faultInstruction = 0u, faultBytes = 0u, faultStage = 0u, faultReason = 0u;
+        const auto fields = std::sscanf(report.c_str(), "BDA access failed: address=0x%llx instruction=0x%x bytes=%u stage=%u reason=%u", &faultAddress, &faultInstruction, &faultBytes, &faultStage, &faultReason);
+        const auto faultPc = (store ? 11u : 7u) * 4u;
+        const auto unmapped = faultUpper ? address + BlockBytes : input;
+        const bool expectedAddress = store ? faultAddress == input && faultBytes == 0u
+            : faultBytes > 0u && faultBytes <= 4u && faultAddress >= unmapped && faultAddress <= unmapped + FaultHalfThreads * 4u - faultBytes;
+        Require(fields == 5 && faultInstruction == faultPc && faultReason == (store ? 8u : 1u) && expectedAddress, label + ": the BDA fault report does not identify this control: " + report);
+    } else {
+        Require(reportStart == std::string::npos, label + ": the healthy control reported a BDA fault: " + reports);
+    }
+    for (std::size_t word = 0; word < memory.size(); ++word) {
+        Require(memory[word] == expected[word], label + " word " + std::to_string(word) + " is " + Hex(memory[word]) + ", expected " + Hex(expected[word]));
+    }
+}
+
+int BarrierFaults(AgcDriver::VulkanDevice& device, bool store, bool faultUpper, bool nonspanning) {
+    if (device.Target().subgroupSize != 32u) {
+        std::printf("skipped, formatted helper half-wave fault controls need subgroup size 32, device reports %u\n", device.Target().subgroupSize);
+        return VulkanTestSkipped;
+    }
+    GuestBlock guest;
+    RunBarrierFault(device, guest, store, faultUpper, false, nonspanning);
+    RunBarrierFault(device, guest, store, faultUpper, true, nonspanning);
+    std::puts("gpu buffer format barrier fault tests passed");
+    return 0;
+}
+
+}
+
+int main(int argc, char** argv) {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        if (argc == 5 && std::string_view(argv[1]) == "--barrier-fault") {
+            const std::string_view operation(argv[2]), half(argv[3]), mode(argv[4]);
+            Require(operation == "load" || operation == "store", "gpu buffer format: unknown barrier operation");
+            Require(half == "lower" || half == "upper", "gpu buffer format: unknown faulting half");
+            Require(mode == "default" || mode == "nonspanning", "gpu buffer format: unknown barrier mode");
+            return BarrierFaults(*device, operation == "store", half == "upper", mode == "nonspanning");
+        }
+        Require(argc == 1, "gpu buffer format: unknown arguments");
         GuestBlock guest;
         const auto shader = Compile(*device, guest);
         for (const auto& test : Cases) {

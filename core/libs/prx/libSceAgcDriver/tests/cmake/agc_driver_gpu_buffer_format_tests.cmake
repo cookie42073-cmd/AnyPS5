@@ -1,0 +1,23 @@
+if(BUILD_TESTING)
+    foreach(operation IN ITEMS load store)
+        foreach(half IN ITEMS lower upper)
+            foreach(mode IN ITEMS default nonspanning)
+                set(testName agc_driver_gpu_buffer_format_barrier_${operation}_${half})
+                if(mode STREQUAL "nonspanning")
+                    string(APPEND testName _nonspanning)
+                    set(modeEnvironment "APS5_NO_SPANNED_WAVE=1")
+                else()
+                    set(modeEnvironment "--unset=APS5_NO_SPANNED_WAVE")
+                endif()
+                add_test(NAME ${testName} COMMAND ${CMAKE_COMMAND} -E env ${modeEnvironment}
+                    "$<TARGET_FILE:agc_driver_gpu_buffer_format_tests>" --barrier-fault ${operation} ${half} ${mode})
+                set_tests_properties(${testName} PROPERTIES
+                    ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+                if(WIN32)
+                    set_tests_properties(${testName} PROPERTIES ENVIRONMENT_MODIFICATION
+                        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+                endif()
+            endforeach()
+        endforeach()
+    endforeach()
+endif()
