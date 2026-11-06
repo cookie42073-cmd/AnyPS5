@@ -886,10 +886,10 @@ std::uint32_t formattedGpuCall(SpirvValueEmitContext& context, const IrValue& in
     const auto u32 = TypeU32(state);
     const auto u64 = TypeScalarU64(state);
     const auto boolean = TypeBool(state);
-    const bool stops = state.bdaStopsInvocations;
+    const bool reportsFault = state.bdaStopsInvocations || state.bdaFaultMasksWrites;
     const auto valueType = components == 1u ? u32 : TypeU32Composite(state, components);
-    const auto resultType = stops ? (store ? u32 : state.module.Type(spv::OpTypeStruct, valueType, u32)) : (store ? state.module.Type(spv::OpTypeVoid) : valueType);
-    const std::array<std::uint32_t, 6> key{components, store ? 1u : 0u, memory.d16 ? 1u : 0u, memory.coherent ? 1u : 0u, static_cast<std::uint32_t>(memory.kind), stops ? 1u : 0u};
+    const auto resultType = reportsFault ? (store ? u32 : state.module.Type(spv::OpTypeStruct, valueType, u32)) : (store ? state.module.Type(spv::OpTypeVoid) : valueType);
+    const std::array<std::uint32_t, 6> key{components, store ? 1u : 0u, memory.d16 ? 1u : 0u, memory.coherent ? 1u : 0u, static_cast<std::uint32_t>(memory.kind), reportsFault ? 1u : 0u};
     auto function = state.formattedGpuBufferFunctions.find(key);
     if (function == state.formattedGpuBufferFunctions.end()) {
         const auto id = state.module.AllocateId();
@@ -899,15 +899,21 @@ std::uint32_t formattedGpuCall(SpirvValueEmitContext& context, const IrValue& in
             SpirvEmitterState& state;
             std::uint32_t label;
             std::uint32_t stopValue;
+            bool stops;
+            bool masksWrites;
             ~Restore() {
                 state.module.EndHelperFunction();
                 state.currentLabel = label;
                 state.bdaStopValue = stopValue;
+                state.bdaStopsInvocations = stops;
+                state.bdaFaultMasksWrites = masksWrites;
                 state.bdaPcOverride = 0u;
             }
         };
         state.module.BeginHelperFunction();
-        const Restore restore{state, state.currentLabel, state.bdaStopValue};
+        const Restore restore{state, state.currentLabel, state.bdaStopValue, state.bdaStopsInvocations, state.bdaFaultMasksWrites};
+        state.bdaStopsInvocations = reportsFault;
+        state.bdaFaultMasksWrites = false;
         state.module.AddName(id, std::string(store ? "store" : "load") + "_formatted_gpu_buffer_x" + std::to_string(components));
         state.module.AddFunction(spv::OpFunction, resultType, id, spv::FunctionControlDontInlineMask, functionType);
         const std::array<std::uint32_t, 11> types{u64, u32, u32, u32, boolean, u32, boolean, u32, u32, u32, valueType};
@@ -918,15 +924,15 @@ std::uint32_t formattedGpuCall(SpirvValueEmitContext& context, const IrValue& in
         }
         EmitLabel(state, state.module.AllocateId());
         const auto zero = components == 1u ? ConstantU32(state, 0u) : ConstantU32CompositeZero(state, components);
-        if (stops) state.bdaStopValue = store ? ConstantU32(state, 1u) : state.module.Constant(spv::OpConstantComposite, resultType, zero, ConstantU32(state, 1u));
+        state.bdaStopValue = reportsFault ? (store ? ConstantU32(state, 1u) : state.module.Constant(spv::OpConstantComposite, resultType, zero, ConstantU32(state, 1u))) : 0u;
         state.bdaPcOverride = parameters[9];
         const RuntimeDescriptor shared{parameters[0], parameters[1], parameters[2], parameters[3], parameters[4], parameters[5], parameters[6], parameters[7], parameters[8]};
         const auto value = formatSwitch(context, instruction, shared, components, store, store ? parameters[10] : 0u);
-        if (!stops && store) {
+        if (!reportsFault && store) {
             state.module.AddFunction(spv::OpReturn);
         } else {
-            auto returned = stops && store ? ConstantU32(state, 0u) : value;
-            if (stops && !store) {
+            auto returned = reportsFault && store ? ConstantU32(state, 0u) : value;
+            if (reportsFault && !store) {
                 returned = state.module.AllocateId();
                 state.module.AddFunction(spv::OpCompositeConstruct, resultType, returned, value, ConstantU32(state, 0u));
             }
@@ -940,7 +946,7 @@ std::uint32_t formattedGpuCall(SpirvValueEmitContext& context, const IrValue& in
     if (store) call.push_back(data);
     state.module.AddFunction(call);
     const auto result = call[2];
-    if (!stops) return store ? ConstantU32(state, 0u) : result;
+    if (!reportsFault) return store ? ConstantU32(state, 0u) : result;
     if (store) {
         StopBdaInvocationIf(state, Binary(state, spv::OpINotEqual, boolean, result, ConstantU32(state, 0u)));
         return ConstantU32(state, 0u);
