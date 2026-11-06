@@ -588,6 +588,7 @@ public:
                 };
                 useSampleShadow = supports(shadowResult, shadowProperties);
                 const bool directSampleable = supports(directResult, directProperties);
+                if (HasStencil(hostFormat) && directSampleable) useSampleShadow = false;
                 sampleable = useSampleShadow || directSampleable;
                 if (!useSampleShadow && directSampleable) info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
             }
