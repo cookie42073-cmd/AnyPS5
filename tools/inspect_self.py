@@ -25,6 +25,8 @@ def main(argv=None):
                 if magic not in (SELF_MAGIC, SELF_MAGIC_KERNEL):
                     raise Refused("not a SELF container")
                 records = read_records(data)
+                if any(offset + length > len(data) for _, offset, length in records):
+                    raise Refused("SELF segment record extends past end of file")
                 inner, _, headers = parse_elf(data)
                 size = len(data)
     except (OSError, ValueError, Refused, struct.error) as error:

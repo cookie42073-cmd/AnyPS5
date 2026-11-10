@@ -61,6 +61,20 @@ class Tests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_reject_segment_record_reaching_past_end_of_self(self):
+        import struct
+        source = self.root / "overlong.self"
+        data = self.fixture()
+        struct.pack_into("<QQQQ", data, 0x40, 0x800, 0x4f0, 0x30, 0x30)
+        source.write_bytes(data)
+        before = source.read_bytes()
+        result = self.run_tool(source)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("past end", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(source.read_bytes(), before)
+
     def test_large_payload_is_not_copied_into_the_python_heap(self):
         source = self.root / "large.self"
         with source.open("wb") as output:
