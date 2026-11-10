@@ -60,6 +60,43 @@ def excessive_trace_json(opening, closing):
     raise AssertionError("JSON decoder accepted every bounded nesting probe")
 
 
+class SummaryWindowInputTests(unittest.TestCase):
+    def test_malformed_window_is_a_clean_cli_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "capture.json"
+            summary = root / "summary.jsonl"
+            trace.write_text('{"traceEvents":[]}', encoding="utf-8")
+            for window in (None, [], "bad", {}, {"ms": None}, {"ms": True}, {"ms": "1"},
+                           {"ms": -1}, {"ms": float("nan")}, {"ms": 10 ** 400}):
+                with self.subTest(window=window):
+                    original = json.dumps({"trace": trace.name, "window": window}) + "\n"
+                    summary.write_text(original, encoding="utf-8")
+                    result = subprocess.run([sys.executable, trace_digest.__file__, str(trace), "--summary",
+                                             str(summary), "--json"], capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn("the summary line has no 'ms' field" if window == {}
+                                  else "summary window", result.stderr)
+                    self.assertEqual(summary.read_text(encoding="utf-8"), original)
+
+    def test_valid_window_digests_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "capture.json"
+            summary = root / "summary.jsonl"
+            trace.write_text('{"traceEvents":[]}', encoding="utf-8")
+            for milliseconds in (0, 5, 5.25):
+                with self.subTest(milliseconds=milliseconds):
+                    summary.write_text(json.dumps({"trace": trace.name, "window": {"ms": milliseconds}}) + "\n",
+                                       encoding="utf-8")
+                    result = subprocess.run([sys.executable, trace_digest.__file__, str(trace), "--summary",
+                                             str(summary), "--json"], capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["window_ms"], 0)
+
+
 class TraceWaitAncestryTests(unittest.TestCase):
     def test_digest_classifies_each_slice_once(self):
         events = [complete(1, "Worker.wait" if index % 3 == 0 else "work",

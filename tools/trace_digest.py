@@ -259,7 +259,22 @@ def persistent_peaks(values):
 
 
 def digest(trace, summary=None, stacks=None, worst=5, top=10):
-    window_ms = summary["window"]["ms"] if summary else None
+    window_ms = None
+    if summary is not None:
+        window = summary.get("window")
+        if not isinstance(window, dict):
+            raise ValueError("summary window must be an object")
+        if "ms" not in window:
+            raise KeyError("ms")
+        value = window["ms"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("summary window.ms must be a finite nonnegative number")
+        try:
+            window_ms = float(value)
+        except (OverflowError, ValueError):
+            raise ValueError("summary window.ms must be a finite nonnegative number") from None
+        if not math.isfinite(window_ms) or not 0 <= window_ms < 1e300:
+            raise ValueError("summary window.ms must be a finite nonnegative number")
     frames = trace.frames(window_ms * 1000.0 if window_ms is not None else None)
     span_us = frames[-1][2] - frames[0][1] if frames else 0.0
     count = max(len(frames), 1)
