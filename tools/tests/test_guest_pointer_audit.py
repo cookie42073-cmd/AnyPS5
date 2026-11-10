@@ -148,6 +148,26 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("core/libs/prx/libSceExample/Export.cpp:1: sceExampleGet: parameter out (index)", output)
         self.assertIn("1 direct guest pointer accesses in 1 exported functions", output)
 
+    def test_invalid_utf8_source_is_not_silently_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prx = root / "core" / "libs" / "prx"
+            lib = prx / "libSceExample"
+            lib.mkdir(parents=True)
+            source = lib / "Export.cpp"
+            source.write_bytes(b"int APS5_VABI sceExampleGet(int* out) { *out = 1; return 0; }\\n" + bytes([0xff]))
+            errors = io.StringIO()
+            output = io.StringIO()
+            with (mock.patch.object(guest_pointer_audit, "ROOT", root),
+                  mock.patch.object(guest_pointer_audit, "PRX", prx),
+                  contextlib.redirect_stderr(errors), contextlib.redirect_stdout(output),
+                  self.assertRaises(SystemExit) as raised):
+                guest_pointer_audit.main(["--json", "libSceExample"])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("UTF-8", errors.getvalue())
+            self.assertEqual(source.read_bytes()[-1:], bytes([0xff]))
+
     def test_unknown_library_is_a_usage_error(self):
         with contextlib.redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as raised:
             self.run_main(["libSceMissing"], {"libSceExample/Export.cpp": ""})

@@ -153,7 +153,7 @@ def audit(libraries):
         for source in sorted(library.rglob("*.cpp")):
             if "tests" in source.relative_to(library).parts:
                 continue
-            text = source_code(source.read_text(encoding="utf-8", errors="ignore"))
+            text = source_code(source.read_text(encoding="utf-8"))
             for entry in audit_text(text):
                 report.append({"library": library.name, "file": source.relative_to(ROOT).as_posix(), **entry})
     return report
@@ -168,7 +168,12 @@ def main(argv=None):
     missing = [name for name in names if not (PRX / name).is_dir()]
     if missing:
         parser.error(f"not a library under core/libs/prx: {', '.join(missing)}")
-    report = audit([PRX / name for name in names])
+    try:
+        report = audit([PRX / name for name in names])
+    except UnicodeError as error:
+        parser.error(f"invalid UTF-8 source: {error}")
+    except OSError as error:
+        parser.error(str(error))
     if args.json:
         print(json.dumps(report, indent=2))
         return 0
