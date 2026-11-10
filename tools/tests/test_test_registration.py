@@ -15,6 +15,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_test_registration
 
 
+class CompdbValidationTests(unittest.TestCase):
+    def test_compdb_rejects_malformed_records_before_iteration(self):
+        for data, expected in (
+            ('{"file":"foo.cpp"}', "expected an array"),
+            ('[{}]', "missing directory"),
+            ('[{"directory":"x","file":"a.cpp","arguments":[]}]', "arguments"),
+            ('[{"directory":"x","file":"a.cpp","command":42}]', "command"),
+        ):
+            with self.subTest(data=data):
+                with (patch.object(check_test_registration, "ninja", return_value=("fake-ninja", "utf-8")),
+                      patch.object(check_test_registration.subprocess, "run",
+                                   return_value=SimpleNamespace(stdout=data)),
+                      self.assertRaisesRegex(ValueError, expected)):
+                    check_test_registration.compiled(Path("build"))
+
 class RegistrationJsonTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("cmake") and shutil.which("ninja"), "CMake and Ninja are required")
     def test_real_cmake_executable_report(self):

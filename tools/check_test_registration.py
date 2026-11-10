@@ -5,6 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_compile import compilation_database
+
 TEST_OUTPUT = r"tests[\\/]"
 SCOPE_START = {"if", "foreach", "while", "function", "macro", "block"}
 COMMAND = re.compile(r"^\s*(add_test|set_tests_properties|subdirs|if|elseif|else|endif|foreach|endforeach|while|endwhile|function|endfunction|macro|endmacro|block|endblock)\s*\(", re.M | re.I)
@@ -67,7 +70,7 @@ def compiled(build):
     database = subprocess.run([program, "-C", str(build), "-t", "compdb"],
                               capture_output=True, text=True, encoding=encoding, check=True).stdout
     sources = set()
-    for entry in json.loads(database):
+    for entry in compilation_database(database, "ninja -t compdb"):
         command = entry.get("command") or " ".join(entry.get("arguments", []))
         if not COMPILE_FLAG.search(command):
             continue
