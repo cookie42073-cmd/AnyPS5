@@ -4,7 +4,9 @@ CANDIDATES = ("upstream/main", "origin/main", "main")
 
 
 def resolve(repo, name=None):
-    if name:
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("explicit base must be a nonempty ref")
         return name
     for candidate in CANDIDATES:
         found = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],

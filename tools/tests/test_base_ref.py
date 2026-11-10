@@ -56,6 +56,13 @@ class BaseRefTests(unittest.TestCase):
         self.commit("first")
         self.assertEqual(base_ref.resolve(self.repo, "release/1.0"), "release/1.0")
 
+    def test_explicit_empty_base_is_not_silently_replaced_with_main(self):
+        first = self.commit("first")
+        self.point("refs/heads/main", first)
+        for value in ("", " ", "\t"):
+            with self.subTest(value=repr(value)), self.assertRaisesRegex(ValueError, "explicit base"):
+                base_ref.resolve(self.repo, value)
+
     def test_no_base_branch_names_every_candidate(self):
         self.commit("first")
         with self.assertRaises(ValueError) as caught:
