@@ -148,6 +148,22 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("core/libs/prx/libSceExample/Export.cpp:1: sceExampleGet: parameter out (index)", output)
         self.assertIn("1 direct guest pointer accesses in 1 exported functions", output)
 
+    def test_refuse_library_paths_that_escape_the_prx_directory(self):
+        files = {"libSceExample/Export.cpp": "int APS5_VABI sceExampleGet(int* out) { *out = 1; return 0; }\n"}
+        for name in (".", "..", "libSceExample/..", "../.."):
+            with self.subTest(name=name):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+                    self.run_main([name], files)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("not a library under core/libs/prx", errors.getvalue())
+
+    def test_valid_dotted_library_name_remains_accepted(self):
+        files = {"libExample.With.Dots/Export.cpp": "int APS5_VABI sceExampleGet(int* out) { *out = 1; return 0; }\n"}
+        code, output = self.run_main(["--json", "libExample.With.Dots"], files)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)[0]["library"], "libExample.With.Dots")
+
     def test_unknown_library_is_a_usage_error(self):
         with contextlib.redirect_stderr(io.StringIO()) as errors, self.assertRaises(SystemExit) as raised:
             self.run_main(["libSceMissing"], {"libSceExample/Export.cpp": ""})
