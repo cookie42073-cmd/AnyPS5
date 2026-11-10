@@ -117,6 +117,17 @@ class PerformanceCompareTests(unittest.TestCase):
                               capture_output=True, text=True, encoding="utf-8", timeout=5,
                               env=dict(os.environ, PYTHONIOENCODING="ascii"))
 
+    def test_reject_dropped_events_when_capture_claims_no_trace_loss(self):
+        self.baseline["trace_dropped"] = False
+        self.baseline["trace_dropped_threads"] = {"queue worker 0x0": {"events_lost": 4}}
+        self.write(self.before, self.baseline)
+        self.write(self.after, self.candidate)
+        result = self.run_cli("--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("trace_dropped", result.stderr)
+        self.assertIn("events_lost", result.stderr)
+
     def test_timings_and_mean_are_compared_without_inverting_percentiles(self):
         self.candidate["window"]["ms"] = 40.0
         self.candidate["frame_ms"] = {"p50": 10.0, "p90": 20.0, "p99": 20.0, "max": 20.0}
