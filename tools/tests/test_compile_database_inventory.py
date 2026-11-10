@@ -54,6 +54,21 @@ class Tests(unittest.TestCase):
         self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
         self.assertEqual(list(self.root.iterdir()), [path])
 
+    def test_nonstring_optional_output_is_rejected(self):
+        path = self.root / "compile_commands.json"
+        base = {"directory": "build", "file": "a.cpp", "command": "missing-tool -c a.cpp"}
+        for value in (None, 3, [], {"name": "a.o"}, float("nan")):
+            with self.subTest(value=repr(value)):
+                path.write_text(json.dumps([{**base, "output": value}]), encoding="utf-8")
+                previous = path.read_bytes()
+                result = self.run_tool(path)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("output", result.stderr)
+                self.assertEqual(path.read_bytes(), previous)
+        path.write_text(json.dumps([{**base, "output": ""}]), encoding="utf-8")
+        self.assertEqual(self.run_tool(path).returncode, 0)
+
     def test_empty_and_invalid_databases(self):
         path=self.root/"db.json"
         for value in ({},[{}],[{"directory":"x","file":"y","arguments":[]}],"bad"):

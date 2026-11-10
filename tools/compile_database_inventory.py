@@ -17,6 +17,8 @@ def main(argv=None):
         entries = compilation_database(args.database.read_text(encoding="utf-8-sig"), args.database)
         units = {}
         for item in entries:
+            if "output" in item and not isinstance(item["output"], str):
+                raise ValueError("optional compilation database output must be a string")
             record = {"arguments": item["arguments"]} if "arguments" in item else {"command": item["command"]}
             if "output" in item:
                 record["output"] = item["output"]
