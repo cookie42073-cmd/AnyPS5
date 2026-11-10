@@ -34,6 +34,17 @@ class RelinkerFuzzSeedsTests(unittest.TestCase):
                 self.assertIn(data[0], relinker_fuzz_seeds.SELECTORS)
                 self.assertGreaterEqual(len(data), 65)
 
+    def test_required_keyword_only_builder_is_not_called_without_arguments(self):
+        def required_keyword_only(*, selector):
+            return b"x" * 64
+        def optional_keyword_only(*, selector=0):
+            return b"x" * 64
+        def required_position(value):
+            return b"x" * 64
+        self.assertFalse(relinker_fuzz_seeds.without_arguments(required_keyword_only))
+        self.assertTrue(relinker_fuzz_seeds.without_arguments(optional_keyword_only))
+        self.assertFalse(relinker_fuzz_seeds.without_arguments(required_position))
+
     def test_creates_nested_parent_directories_and_writes_seeds(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "nested" / "deep" / "seeds"
