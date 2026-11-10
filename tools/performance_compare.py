@@ -89,6 +89,18 @@ def unique_json_object(pairs):
     return result
 
 
+def reject_nonfinite_numbers(value):
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError(f"non-standard JSON constant {item!r}")
+
+
 def load_summary(path, trace=None):
     selected = None
     count = 0
@@ -113,7 +125,9 @@ def load_summary(path, trace=None):
                          "or provide a file containing one summary line")
     line_number, record = selected
     try:
-        return validate(record)
+        validated = validate(record)
+        reject_nonfinite_numbers(validated)
+        return validated
     except ValueError as error:
         raise ValueError(f"{path}:{line_number}: {error}") from error
 

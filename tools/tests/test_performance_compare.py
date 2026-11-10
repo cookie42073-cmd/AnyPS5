@@ -117,6 +117,17 @@ class PerformanceCompareTests(unittest.TestCase):
                               capture_output=True, text=True, encoding="utf-8", timeout=5,
                               env=dict(os.environ, PYTHONIOENCODING="ascii"))
 
+    def test_unknown_metadata_cannot_hide_nonstandard_json_numbers(self):
+        for token in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(token=repr(token)):
+                self.baseline["unused_measurement"] = token
+                self.write(self.before, self.baseline)
+                self.write(self.after, self.candidate)
+                result = self.run_cli()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("non-standard JSON constant", result.stderr)
+
     def test_timings_and_mean_are_compared_without_inverting_percentiles(self):
         self.candidate["window"]["ms"] = 40.0
         self.candidate["frame_ms"] = {"p50": 10.0, "p90": 20.0, "p99": 20.0, "max": 20.0}
