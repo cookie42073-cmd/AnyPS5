@@ -284,6 +284,25 @@ class ProgressHistoryTests(unittest.TestCase):
                 self.assertEqual(progress_history.page(uncached), progress_history.page(second))
             self.assertFalse(any(path.name.startswith(".history-") for path in cache.parent.iterdir()))
 
+    def test_cache_rejects_duplicate_json_keys_without_modification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "history.json"
+            sha = "a" * 40
+            record = '{"libraries":{"done":1,"total":1,"percent":100},"shaders":{"done":0,"total":0,"percent":0},"shader_metric":"decoded"}'
+            for payload in (
+                '{"schema_version":2,"schema_version":2,"rules":"rules","commits":{}}',
+                '{"schema_version":2,"rules":"rules","commits":{"' + sha + '":null},"commits":{}}',
+                '{"schema_version":2,"rules":"rules","commits":{"' + sha + '":' + record.replace('"done":1', '"done":0,"done":1', 1) + '}}',
+            ):
+                with self.subTest(payload=payload):
+                    cache.write_text(payload, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "duplicate history cache key"):
+                        progress_history.load_cache(cache, "rules")
+                    self.assertEqual(cache.read_text(encoding="utf-8"), payload)
+            valid = '{"schema_version":2,"rules":"rules","commits":{"' + sha + '":' + record + '}}'
+            cache.write_text(valid, encoding="utf-8")
+            self.assertEqual(progress_history.load_cache(cache, "rules")[sha]["libraries"]["done"], 1)
+
     def test_invalid_cache_is_not_overwritten(self):
         import json
         with tempfile.TemporaryDirectory() as directory:

@@ -141,8 +141,16 @@ def cache_signature():
 def load_cache(path, signature):
     if not path.exists():
         return {}
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{path}: duplicate history cache key {key}")
+            result[key] = value
+        return result
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_keys)
     except RecursionError as error:
         raise ValueError(f"{path}: history cache JSON is too deeply nested") from error
     if not isinstance(data, dict) or type(data.get("schema_version")) is not int or data["schema_version"] != 2 or not isinstance(data.get("rules"), str) or not isinstance(data.get("commits"), dict):
