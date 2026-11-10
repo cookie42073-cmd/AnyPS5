@@ -15,6 +15,7 @@ def main(argv=None):
     parser.add_argument("database", type=Path)
     args = parser.parse_args(argv)
     try:
+        args.database.read_text(encoding="utf-8-sig")
         database = parse_db(args.database)
         entries = [{"nid": nid, "name": name, "computed_nid": compute_nid(name), "matches": nid == compute_nid(name)}
                    for nid, name in sorted(database.items())]

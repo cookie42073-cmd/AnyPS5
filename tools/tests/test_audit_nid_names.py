@@ -49,6 +49,17 @@ class Tests(unittest.TestCase):
         path.write_text("6OkOa1SOKuY sceAmprUnknown00\n",encoding="utf-8")
         self.assertEqual(self.run_main(path).returncode,0)
 
+    def test_invalid_utf8_database_does_not_produce_a_partial_hash_report(self):
+        path = self.root / "invalid-nid.csv"
+        original = b"6OkOa1SOKuY sceAmprUnknown00" + bytes([0xff]) + b"\n"
+        path.write_bytes(original)
+        result = self.run_tool(path)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("utf-8", result.stderr.lower())
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_empty_and_invalid_database(self):
         path=self.root/"db"
         path.write_bytes(b"")
