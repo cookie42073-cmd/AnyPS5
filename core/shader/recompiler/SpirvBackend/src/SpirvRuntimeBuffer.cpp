@@ -358,8 +358,13 @@ void writeBuffer(SpirvValueEmitContext& context, const IrValue& instruction, std
         const auto element = ResourceForDescriptor(state, DescriptorBindingKind::Buffers, context.Memory(instruction).resource);
         const auto block = state.module.AllocateId();
         state.module.AddFunction(spv::OpAccessChain, TypeStorageBufferU8Pointer(state), block, bytes, ConstantU32(state, element));
-        EmitIfCondition(state, EmitMemoryElementInBounds(state, access, last), [&] {
-            const auto first = EmitAddU32(state, EmitAddU32(state, Binary(state, spv::OpShiftLeftLogical, u32, index, ConstantU32(state, 2u)), misalignment), EmitAndConstant(state, address, 3u));
+        const auto length = state.module.AllocateId();
+        state.module.AddFunction(spv::OpArrayLength, u32, length, block, 0u);
+        const auto first = EmitAddU32(state, EmitAddU32(state, Binary(state, spv::OpShiftLeftLogical, u32, index, ConstantU32(state, 2u)), misalignment), EmitAndConstant(state, address, 3u));
+        const auto startFits = Binary(state, spv::OpULessThanEqual, TypeBool(state), first, length);
+        const auto remaining = Binary(state, spv::OpISub, u32, length, first);
+        const auto storeFits = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), remaining, ConstantU32(state, bits / 8u));
+        EmitIfCondition(state, both(state, startFits, storeFits), [&] {
             for (std::uint32_t byte = 0; byte < bits / 8u; ++byte) {
                 const auto pointer = state.module.AllocateId();
                 state.module.AddFunction(spv::OpAccessChain, TypeStorageBufferU8ElementPointer(state), pointer, block, ConstantU32(state, 0u), EmitAddU32(state, first, ConstantU32(state, byte)));
