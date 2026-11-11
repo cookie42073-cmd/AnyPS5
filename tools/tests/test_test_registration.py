@@ -730,6 +730,8 @@ class DisabledScriptRegistrationTests(unittest.TestCase):
         (self.source / self.script).write_text('print("registration-probe-ran")\n', encoding="utf-8")
         self.tool = self.source / "tools/check_test_registration.py"
         self.tool.write_bytes(Path(check_test_registration.__file__).read_bytes())
+        (self.source / "tools/check_compile.py").write_bytes((Path(check_test_registration.__file__).parent / "check_compile.py").read_bytes())
+        (self.source / "tools/base_ref.py").write_bytes((Path(check_test_registration.__file__).parent / "base_ref.py").read_bytes())
         subprocess.run(["git", "init", "-q", str(self.source)], check=True, capture_output=True)
 
     def run_project(self, registrations, workflow=None):

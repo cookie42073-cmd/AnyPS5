@@ -70,7 +70,7 @@ def compiled(build):
     database = subprocess.run([program, "-C", str(build), "-t", "compdb"],
                               capture_output=True, text=True, encoding=encoding, check=True).stdout
     sources = set()
-    for entry in compilation_database(database, "ninja -t compdb"):
+    for entry in compilation_database(database, "ninja -t compdb", skip_empty_commands=True):
         command = entry.get("command") or " ".join(entry.get("arguments", []))
         if not COMPILE_FLAG.search(command):
             continue
