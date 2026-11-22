@@ -42,8 +42,10 @@ def changed_lines(root, base, tip):
     old_path, new_path, in_hunk = None, None, False
     diff = git(root, "diff", "-U0", "--no-renames", "--no-relative", "--no-color", "--no-ext-diff", "--no-textconv",
                "--ignore-submodules=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", base, tip, raw=True)
-    lines = diff.decode("utf-8", "replace").split("\n")
-    for index, line in enumerate(lines):
+    lines = diff.split(b"\n")
+    newline_marker = NO_NEWLINE.encode("ascii")
+    for index, raw_line in enumerate(lines):
+        line = raw_line.decode("utf-8", "surrogateescape")
         if line.startswith("diff --git "):
             old_path, new_path, in_hunk = None, None, False
         elif not in_hunk and line.startswith("--- "):
@@ -54,7 +56,7 @@ def changed_lines(root, base, tip):
             in_hunk = True
         elif in_hunk and line.startswith("+") and new_path is not None:
             text = line[1:]
-            if lines[index + 1:index + 2] == [NO_NEWLINE]:
+            if lines[index + 1:index + 2] == [newline_marker]:
                 text += "\n" + NO_NEWLINE
             added[new_path][text] += 1
         elif in_hunk and line.startswith("-") and old_path is not None:
@@ -84,12 +86,16 @@ def shown(text):
     return text[:100].replace("\r", "\\r") + (" (no newline at end of file)" if unterminated else "")
 
 
-def changed_modes(root, base, tip):
-    fields = git(root, "diff", "--raw", "-z", "--no-renames", "--no-relative", "--no-ext-diff",
+def raw_changes(root, base, tip):
+    fields = git(root, "diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-relative", "--no-ext-diff",
                  "--ignore-submodules=none", base, tip, "--", raw=True).split(b"\0")
+    return ((header[1:].split(), path) for header, path in zip(fields[::2], fields[1::2]))
+
+
+def changed_modes(root, base, tip):
     modes = {}
-    for header, path in zip(fields[::2], fields[1::2]):
-        before, after = header[1:].split(maxsplit=2)[:2]
+    for fields, path in raw_changes(root, base, tip):
+        before, after = fields[:2]
         if before != after:
             modes[path] = before.decode("ascii"), after.decode("ascii")
     return modes
@@ -113,6 +119,22 @@ def mode_differences(root, old_base, old, new_base, new):
     return problems
 
 
+def binary_paths(root, base, tip):
+    records = git(root, "diff", "--numstat", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-textconv",
+                  "--ignore-submodules=none", base, tip, "--", raw=True).split(b"\0")
+    return {record.split(b"\t", 2)[2] for record in records if record.startswith(b"-\t-\t")}
+
+
+def binary_differences(root, old_base, old, new_base, new):
+    original = binary_paths(root, old_base, old)
+    rebased = binary_paths(root, new_base, new)
+    changed = {path for fields, path in raw_changes(root, old, new) if fields[2] != fields[3]} if original else set()
+    return [f"{path.decode('utf-8', 'backslashreplace')}: binary contents differ from the original branch"
+            for path in sorted(original & changed)] + [
+        f"{path.decode('utf-8', 'backslashreplace')}: unexpected binary change"
+        for path in sorted(rebased - original)]
+
+
 def verify(root, old, new, onto):
     old_base = git(root, "merge-base", old, onto).strip()
     new_base = git(root, "merge-base", new, onto).strip()
@@ -132,6 +154,7 @@ def verify(root, old, new, onto):
     }
     problems += differences(expected_deleted, new_deleted, deleted=True)
     problems += mode_differences(root, old_base, old, new_base, new)
+    problems += binary_differences(root, old_base, old, new_base, new)
     return old_base, count_old, count_new, problems
 
 
