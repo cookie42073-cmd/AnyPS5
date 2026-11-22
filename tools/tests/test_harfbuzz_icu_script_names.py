@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import subprocess
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -71,6 +72,24 @@ class GeneratorTests(unittest.TestCase):
             self.generate(header_text(codes))
         self.assertEqual(refused.exception.code, 2)
         self.assertFalse((self.root / "IcuScriptNames.hpp").exists())
+
+    def test_missing_header_is_a_cli_error_without_a_traceback(self):
+        source = self.root / "missing.h"
+        output = self.root / "IcuScriptNames.hpp"
+        result = subprocess.run([sys.executable, generator.__file__, str(source), str(output)],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("missing.h", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_unwritable_header_destination_is_a_clean_cli_error(self):
+        output = self.root / "IcuScriptNames.hpp"
+        output.mkdir()
+        with self.assertRaises(SystemExit) as error:
+            self.generate(header_text(range(SCRIPT_COUNT)))
+        self.assertEqual(error.exception.code, 2)
+        self.assertTrue(output.is_dir())
 
 
 class SameFileTests(unittest.TestCase):

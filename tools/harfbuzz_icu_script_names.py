@@ -18,9 +18,12 @@ def main():
     parser.add_argument("header", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    if same_input_output(args.header, args.output):
-        parser.error("output must be separate from the ICU header")
-    source = args.header.read_bytes()
+    try:
+        if same_input_output(args.header, args.output):
+            parser.error("output must be separate from the ICU header")
+        source = args.header.read_bytes()
+    except OSError as error:
+        parser.error(str(error))
     if hashlib.sha256(source).hexdigest() != ICU_68_2_SHA256:
         parser.error("expected icu4c/source/common/unicode/uscript.h from ICU release-68-2")
     entries = sorted(
@@ -35,7 +38,10 @@ def main():
     for start in range(0, len(names), 10):
         lines.append("    " + ", ".join(names[start:start + 10]) + ",")
     lines += ["};", "", "}", ""]
-    args.output.write_bytes("\n".join(lines).encode("ascii"))
+    try:
+        args.output.write_bytes("\n".join(lines).encode("ascii"))
+    except OSError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":
