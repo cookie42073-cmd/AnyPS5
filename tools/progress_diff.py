@@ -33,6 +33,15 @@ def unique_json_keys(pairs):
     return result
 
 
+def load_snapshot(path):
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_json_keys)
+        progress.validate_snapshot(snapshot)
+    except (ValueError, RecursionError) as error:
+        raise ValueError(f"{path}: {error}") from error
+    return snapshot
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -42,11 +51,9 @@ def main(argv=None):
     parser.add_argument("candidate", type=Path)
     args = parser.parse_args(argv)
     try:
-        snapshots = [json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_json_keys) for path in (args.baseline, args.candidate)]
-        for snapshot in snapshots:
-            progress.validate_snapshot(snapshot)
+        snapshots = [load_snapshot(path) for path in (args.baseline, args.candidate)]
         text = json.dumps(compare(*snapshots), ensure_ascii=False, allow_nan=False, indent=2)
-    except (OSError, ValueError, RecursionError) as error:
+    except (OSError, ValueError) as error:
         parser.error(str(error))
     print(text)
     return 0
