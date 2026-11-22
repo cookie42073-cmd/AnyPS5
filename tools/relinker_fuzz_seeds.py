@@ -29,9 +29,11 @@ def images():
             continue
         for name in BUILDERS:
             function = getattr(module, name, None)
-            if not callable(function) or not without_arguments(function):
+            if not callable(function):
                 continue
             try:
+                if not without_arguments(function):
+                    continue
                 data = function()
             except Exception as error:
                 print(f"warning: no seed from {path.stem}.{name}: {error}", file=sys.stderr)

@@ -57,6 +57,21 @@ class FixtureSelectionTests(unittest.TestCase):
         self.assertTrue(relinker_fuzz_seeds.without_arguments(optional))
         self.assertFalse(relinker_fuzz_seeds.without_arguments(required))
 
+    def test_builder_discovery_continues_after_an_unavailable_signature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tests = Path(directory)
+            self.write(tests, "test_seed_unknown_signature.py", """
+fixture = dict
+
+def image():
+    return bytes(range(64))
+""")
+            errors = io.StringIO()
+            with mock.patch.object(relinker_fuzz_seeds, "TESTS", tests), contextlib.redirect_stderr(errors):
+                images = list(relinker_fuzz_seeds.images())
+            self.assertEqual(images, [("test_seed_unknown_signature-image", bytes(range(64)))])
+            self.assertIn("warning: no seed from test_seed_unknown_signature.fixture:", errors.getvalue())
+
     def test_images_yield_all_supported_builders_and_selector_data(self):
         with tempfile.TemporaryDirectory() as directory:
             tests = Path(directory)
