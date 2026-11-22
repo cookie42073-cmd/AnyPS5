@@ -700,6 +700,12 @@ class ScriptTestOwnersTests(unittest.TestCase):
 class CtestResolutionsTests(unittest.TestCase):
     TARGETS = {"alpha": "alpha", "beta": "beta"}
 
+    def test_duplicate_test_names_are_reported_before_indices_are_overwritten(self):
+        tests = [{"name": "same", "command": ["bin/alpha.exe"]},
+                 {"name": "same", "command": ["bin/beta.exe"]}]
+        with self.assertRaisesRegex(ValueError, "duplicate CTest test name: same"):
+            self.resolve(tests)
+
     def resolve(self, tests, **kwargs):
         with mock.patch.object(build_changed_guest_tests.subprocess, "run") as run:
             run.return_value.stdout = json.dumps({"tests": tests})
@@ -724,6 +730,17 @@ class CtestResolutionsTests(unittest.TestCase):
 
     def test_document_without_tests_resolves_nothing(self):
         self.assertEqual(self.resolve([]), {})
+
+    def test_unbuilt_test_wrapper_is_resolved_from_its_ctest_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            (build / "CTestTestfile.cmake").write_text(
+                'add_test([=[wrapper]=] "bin/alpha.exe" "bin/beta.exe")\n', encoding="utf-8")
+            listing = {"tests": [{"name": "wrapper"}, {"name": "beta", "command": ["bin/beta.exe"]}]}
+            with mock.patch.object(build_changed_guest_tests.subprocess, "run") as run:
+                run.return_value.stdout = json.dumps(listing)
+                result = build_changed_guest_tests.ctest_resolutions(build, self.TARGETS, {"beta"})
+            self.assertEqual(result, {"wrapper": ("alpha", 1), "beta": ("beta", 2)})
 
 
 if __name__ == "__main__":

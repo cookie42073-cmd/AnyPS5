@@ -167,15 +167,26 @@ def ctest_resolutions(build_dir, targets_by_name, selected=None):
         capture_output=True, text=True, encoding="utf-8", check=True)
     document = json.loads(result.stdout)
     resolutions = {}
+    registered = None
+    names = set()
     for index, test in enumerate(document.get("tests", []), 1):
+        name = test["name"]
+        if name in names:
+            raise ValueError(f"duplicate CTest test name: {name}")
+        names.add(name)
         command = [str(part) for part in test.get("command", [])]
         owner = test_owner(command, targets_by_name)
+        if owner is None:
+            if registered is None:
+                registered = registered_test_commands(build_dir)
+            command = registered.get(name, [])
+            owner = test_owner(command, targets_by_name)
         references = {
             targets_by_name.get(Path(part).stem.casefold()) for part in command
             if not part.startswith("-") and ("/" in part or "\\" in part or Path(part).suffix.casefold() == ".exe")
         }
         if owner is not None and (selected is None or owner in selected or references & selected):
-            resolutions[test["name"]] = (owner, index)
+            resolutions[name] = (owner, index)
     return resolutions
 
 
