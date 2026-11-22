@@ -125,6 +125,18 @@ class OpenPrProgressTests(unittest.TestCase):
         self.assertEqual(order, [])
         self.assertEqual(excluded, {1: "dependency_cycle", 2: "dependency_cycle"})
 
+    def test_head_already_in_main_does_not_probe_a_stale_closed_dependency(self):
+        present = self.branch(1, {"first": "1"})
+        present["depends"] = {99}
+        followup = self.branch(2, {"second": "2"}, parent=present["sha"])
+        followup["depends"] = {1}
+        with patch.object(progress_prs, "closed_dependency_status", side_effect=RuntimeError("dependency unavailable")) as probe:
+            _, included, excluded = progress_prs.integrate_pull_requests(
+                self.root, {1: present, 2: followup}, present["sha"], "fixture/repo")
+        probe.assert_not_called()
+        self.assertEqual(included, {1, 2})
+        self.assertEqual(excluded, {})
+
     def test_changed_heads_are_relisted_and_refetched_once(self):
         old = {1: {"sha": "old", "depends": set()}}
         current = {1: {"sha": "new", "depends": set()}}
