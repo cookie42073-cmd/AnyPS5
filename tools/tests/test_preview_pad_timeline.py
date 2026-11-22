@@ -49,6 +49,14 @@ class TimelinePreviewTests(unittest.TestCase):
         self.assertEqual(result["events"][0], {"at_ms": 0, "hold_ms": 300, "buttons": 0, "left_stick": [255, 128], "right_stick": [128, 128]})
         self.assertEqual(result["events"][1], {"at_ms": 400, "hold_ms": 100, "buttons": pad_timeline.BUTTONS["cross"]})
 
+    def test_preview_reserves_space_for_the_full_runtime_sequence_number(self):
+        document = {"version": 1, "events": [
+            {"at_ms": 0, "hold_ms": 1, "buttons": ["cross"], "left_stick": [255, 255], "right_stick": [255, 255]}]}
+        self.assertEqual(len(pad_timeline.compile_timeline(document, 1, 2297, 0)), 65530)
+        with self.assertRaisesRegex(ValueError, "runtime reads at most 65536"):
+            preview_pad_timeline.preview(document, repeat=2297, gap_ms=0)
+        self.assertEqual(preview_pad_timeline.preview(document, repeat=2296, gap_ms=0)["event_count"], 2296)
+
     def test_cli_text_output_lists_stick_positions(self):
         document = {"version": 1, "events": [{"at_ms": 0, "hold_ms": 300, "buttons": [], "left_stick": [255, 128]},
                                              {"at_ms": 400, "hold_ms": 100, "buttons": ["cross"]}]}
