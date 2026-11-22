@@ -275,6 +275,17 @@ class RebaseVerifyTests(unittest.TestCase):
                     f"{path}: a line is added that the branch did not add (1x): Subproject commit {unexpected}",
                 ])
 
+    def test_distinct_non_utf8_bytes_are_not_treated_as_identical_text(self):
+        path = "legacy.txt"
+        for branch, data in (("old", b"legacy \xe9\n"), ("new", b"legacy \xf1\n")):
+            self.git("checkout", "-q", branch)
+            (self.root / path).write_bytes(data)
+            self.git("add", "--", path)
+            self.git("commit", "-q", "--amend", "--no-edit")
+        problems = self.verify()
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all(path in problem for problem in problems))
+
     def test_a_line_added_twice_is_reported(self):
         self.write("f.txt", "a\nNEW\nNEW\nb\nc\ntail\n")
         self.git("commit", "-q", "-a", "--amend", "--no-edit")

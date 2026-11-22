@@ -50,7 +50,7 @@ def changed_lines(root, base, tip):
     old_path, new_path, in_hunk = None, None, False
     diff = git(root, "diff", "-U0", "--no-renames", "--no-relative", "--no-color", "--no-ext-diff", "--no-textconv",
                "--ignore-submodules=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", base, tip, raw=True)
-    lines = diff.decode("utf-8", "replace").split("\n")
+    lines = diff.decode("utf-8", "surrogateescape").split("\n")
     for index, line in enumerate(lines):
         if line.startswith("diff --git "):
             old_path, new_path, in_hunk = None, None, False
