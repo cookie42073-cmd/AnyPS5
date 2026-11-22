@@ -249,6 +249,17 @@ class SanitizerReportTests(unittest.TestCase):
         text, _ = sanitizer_report.summarize("ASan", {"fiber": "failed"}, {"fiber": "stack switch"})
         self.assertNotIn("Listed as known but", text)
 
+    def test_sanitizer_diagnostics_in_junit_failure_elements_are_reported(self):
+        junit = self.write(suite(
+            case("body", "fail", "<failure>SUMMARY: AddressSanitizer: heap-use-after-free</failure>"),
+            case("attribute", "fail", '<error message="WARNING: ThreadSanitizer: data race"/>'),
+        ))
+        code, stdout, stderr = self.run_main(junit, "--json")
+        self.assertEqual(code, 1, stderr)
+        diagnostics = {test["name"]: test["report"] for test in json.loads(stdout)["tests"]}
+        self.assertEqual(diagnostics, {"body": "SUMMARY: AddressSanitizer: heap-use-after-free",
+                                       "attribute": "WARNING: ThreadSanitizer: data race"})
+
     def test_first_report_prefers_the_summary_then_the_error_then_a_runtime_error(self):
         asan = ("==7==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x60d0\n"
                 "READ of size 16\n"
