@@ -448,7 +448,7 @@ class TraceDigestTests(unittest.TestCase):
         result = subprocess.run([sys.executable, trace_digest.__file__, str(self.trace)],
                                 capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertTrue(result.stderr.startswith("FAIL: the summary line has no 'ms' field"), result.stderr)
+        self.assertTrue(result.stderr.startswith(f"FAIL: {summary}:1: window.ms"), result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(result.stdout, "")
 
@@ -792,6 +792,40 @@ class TraceDigestTests(unittest.TestCase):
                 self.stacks.write_text(text, encoding="utf-8-sig")
                 self.assertEqual(self.json_output(self.trace, "--stacks", str(self.stacks)), expected)
                 self.assertEqual(trace_digest.load_stacks(self.stacks), expected_stacks)
+
+    def test_cli_rejects_bad_fields_in_the_selected_capture_summary(self):
+        summary = self.trace.with_name("aps5-summary.jsonl")
+        paths = {
+            ("commit",): (None, 1, [], {}),
+            ("gpu",): (None, 1, [], {}),
+            ("driver",): (None, 1, [], {}),
+            ("os",): (None, 1, [], {}),
+            ("resolution",): (None, 1, [], {}),
+            ("dirty",): (0, "false", []),
+            ("trace_dropped",): (None, 0, "false"),
+            ("window", "spec"): (None, 1, []),
+            ("window", "first_present"): (None, True, -1, 1.5),
+            ("presents",): (None, True, -1, 1.5),
+            ("gpu_busy_ms_per_present",): (None, True, -1, "1", float("inf")),
+            ("frame_ms",): (None, [], {}),
+        }
+        paths.update({("frame_ms", key): (None, True, -1, "1", float("inf"))
+                      for key in ("p50", "p90", "p99", "max")})
+        for path, values in paths.items():
+            for value in values:
+                with self.subTest(field=path, value=value):
+                    record = json.loads(json.dumps(SUMMARY))
+                    parent = record[path[0]] if len(path) == 2 else record
+                    parent[path[-1]] = value
+                    summary.write_text(json.dumps(dict(SUMMARY, trace="other.json.gz")) + "\n\n"
+                                       + json.dumps(record) + "\n", encoding="utf-8")
+                    for mode in ([], ["--json"]):
+                        result = subprocess.run([sys.executable, trace_digest.__file__, str(self.trace), *mode],
+                                                capture_output=True, text=True, encoding="utf-8", timeout=10)
+                        self.assertEqual((result.returncode, result.stdout), (2, ""))
+                        self.assertIn(f"{summary}:3:", result.stderr)
+                        self.assertIn(".".join(path), result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
 
     def test_summary_is_the_line_of_this_trace(self):
         self.assertEqual(self.result()["summary"]["trace"], "aps5-trace-abc-7.json.gz")

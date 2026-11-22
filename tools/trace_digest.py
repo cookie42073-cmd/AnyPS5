@@ -208,14 +208,51 @@ def load_summary(path, trace_path):
             return None
         candidate = resolve_summary_path(hint)
     label = Path(path) if path else hint
-    lines = load_summary_lines(candidate, label=label)
+    lines = load_summary_lines(candidate, numbered=True, label=label)
     name = Path(trace_path).name
     alternate = name[:-3] if name.endswith(".gz") else name + ".gz"
     for filename in (name, alternate):
-        for line in reversed(lines):
+        for number, line in reversed(lines):
             if line.get("trace") == filename:
+                try:
+                    validate_capture_summary(line)
+                except ValueError as error:
+                    raise ValueError(f"{label}:{number}: {error}") from error
                 return line
     return None
+
+
+def capture_window_end(window):
+    if not isinstance(window, dict):
+        raise ValueError("window must be an object")
+    end = interval_number(window.get("ms"), "window.ms") * 1000.0
+    if not math.isfinite(end):
+        raise ValueError("window.ms is too large to convert to microseconds")
+    return end
+
+
+def validate_capture_summary(summary):
+    window = summary.get("window")
+    capture_window_end(window)
+    if not isinstance(window.get("spec"), str):
+        raise ValueError("window.spec must be a string")
+    for field, value in (("window.first_present", window.get("first_present")), ("presents", summary.get("presents"))):
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+    for field in ("commit", "gpu", "driver", "os", "resolution"):
+        if not isinstance(summary.get(field), str):
+            raise ValueError(f"{field} must be a string")
+    if summary.get("dirty") is not None and type(summary["dirty"]) is not bool:
+        raise ValueError("dirty must be a boolean or null")
+    if type(summary.get("trace_dropped")) is not bool:
+        raise ValueError("trace_dropped must be a boolean")
+    frames = summary.get("frame_ms")
+    if not isinstance(frames, dict):
+        raise ValueError("frame_ms must be an object")
+    values = [interval_number(frames.get(field), f"frame_ms.{field}") for field in ("p50", "p90", "p99", "max")]
+    if values != sorted(values):
+        raise ValueError("frame_ms must satisfy p50 <= p90 <= p99 <= max")
+    interval_number(summary.get("gpu_busy_ms_per_present"), "gpu_busy_ms_per_present")
 
 
 def load_stacks(path):
@@ -295,14 +332,7 @@ def recorded_span(trace, tid, frames, full_at):
 
 
 def digest(trace, summary=None, stacks=None, worst=5, top=10):
-    window_end = None
-    if summary:
-        window = summary["window"]
-        if not isinstance(window, dict):
-            raise ValueError("window must be an object")
-        window_end = interval_number(window["ms"], "window.ms") * 1000.0
-        if not math.isfinite(window_end):
-            raise ValueError("window.ms is too large to convert to microseconds")
+    window_end = capture_window_end(summary.get("window")) if summary else None
     frames = trace.frames(window_end)
     span_us = frames[-1][2] - frames[0][1] if frames else 0.0
     count = max(len(frames), 1)
