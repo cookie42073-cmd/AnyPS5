@@ -68,6 +68,21 @@ class PatchAdvisorTests(unittest.TestCase):
                                                  str(self.input)])
         self.assertFalse((self.root / "relinker-patches.toml").exists())
 
+    @patch.object(suggest_patches.subprocess, "run")
+    def test_unsupported_patch_format_is_rejected_before_native_verification(self, run):
+        run.return_value = subprocess.CompletedProcess([], 2, stdout="", stderr="Unsupported patch format")
+        patch_file = self.catalog / "patch.toml"
+        original = patch_file.read_text(encoding="utf-8")
+        for tag in ("", "format = 2\n", "format = true\n"):
+            with self.subTest(tag=tag):
+                patch_file.write_text(tag + original.split("\n", 1)[1], encoding="utf-8")
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = self.advise()
+                self.assertEqual(code, 1)
+                self.assertIn("patch file must have format 1", stdout.getvalue())
+                run.assert_not_called()
+
     def test_relinker_output_is_utf8_independent_of_host_encoding(self):
         actual_run = subprocess.run
         for diagnostic in ("caf\u00e9 \u65e5\u672c\u8a9e".encode(), b"invalid byte \xff"):
@@ -804,7 +819,7 @@ class ValidateMetadataTests(unittest.TestCase):
 class ValidateEntryTests(unittest.TestCase):
     DIGEST = "A" * 64
 
-    def setup(self, directory, patch_text='[[patch]]\ntarget = "eboot.bin"\n'):
+    def setup(self, directory, patch_text='format = 1\n[[patch]]\ntarget = "eboot.bin"\n'):
         (Path(directory) / "p.toml").write_text(patch_text, encoding="utf-8")
         return {"titleId": "PPSA00001", "contentVersion": "01.00", "patch": "p.toml", "targets": {"eboot.bin": self.DIGEST}}
 
