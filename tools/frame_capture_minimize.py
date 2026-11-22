@@ -8,8 +8,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from performance_compare import unique_json_object
-
 
 class TrialLimitReached(Exception):
     pass
@@ -72,6 +70,8 @@ class Minimizer:
                     raise RuntimeError(f"capture inspection chunks[{position}] has an invalid group")
 
     def inspect(self):
+        from performance_compare import unique_json_object
+
         result = subprocess.run([*self.command(self.filter), "inspect", str(self.capture)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "capture inspection failed")
