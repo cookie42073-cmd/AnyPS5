@@ -76,6 +76,14 @@ class ReplayTests(unittest.TestCase):
 
 
 class KnownTests(unittest.TestCase):
+    def test_known_directory_is_rejected_before_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(library_oracle, "fetch", side_effect=AssertionError("fetch called")):
+                with self.assertRaises(SystemExit) as raised:
+                    library_oracle.main(["rtc", "--known", directory, "--replay", "unused"])
+            self.assertIn(directory, str(raised.exception))
+            self.assertIn("cannot read known findings", str(raised.exception))
+
     def test_write_known_preserves_a_reason_with_embedded_and_trailing_tabs(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "known.tsv"
