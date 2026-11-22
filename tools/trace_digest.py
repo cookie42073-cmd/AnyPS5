@@ -220,13 +220,16 @@ def load_summary(path, trace_path):
 
 def load_stacks(path):
     stacks = []
-    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+    for number, line in enumerate(Path(path).read_text(encoding="utf-8-sig").split("\n"), 1):
         if line.startswith("#") or not line.strip():
             continue
         frames, _, count = line.rpartition(" ")
         if not (count.isascii() and count.isdigit()):
             raise ValueError(f"{path}:{number}: sample count must be a positive integer")
-        weight = int(count)
+        digits = count.lstrip("0") or "0"
+        weight = int(digits) if len(digits) <= 20 else None
+        if weight is None or weight >= 1 << 64:
+            raise ValueError(f"{path}:{number}: sample count exceeds uint64")
         if weight <= 0 or any(not frame.strip() for frame in frames.split(";")):
             raise ValueError(f"{path}:{number}: expected nonempty frames and a positive sample count")
         stacks.append((frames.split(";"), weight))
