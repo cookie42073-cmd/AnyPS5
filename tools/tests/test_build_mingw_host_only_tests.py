@@ -19,6 +19,17 @@ class BuildMingwHostOnlyTestsTests(unittest.TestCase):
         without = {"link": {"commandFragments": [{"fragment": "/out/libfoo.a"}]}}
         self.assertFalse(build_mingw_host_only_tests.is_libc_link("test", without))
 
+    def test_is_libc_link_recognizes_quoted_artifacts_and_exact_linker_names(self):
+        for command in ('"libc.prx"', "'liblibc.dll.a'", "a.o -l:libc.dll.a",
+                        '"C:\\build dir\\LibC.PRX"'):
+            with self.subTest(command=command):
+                target = {"link": {"commandFragments": [{"fragment": command, "role": "libraries"}]}}
+                self.assertTrue(build_mingw_host_only_tests.is_libc_link("test", target))
+        for command in ('"not-libc.prx"', "a.o -l:libc.dll.a.backup", "a.o -lc"):
+            with self.subTest(command=command):
+                target = {"link": {"commandFragments": [{"fragment": command, "role": "libraries"}]}}
+                self.assertFalse(build_mingw_host_only_tests.is_libc_link("test", target))
+
     def test_is_core_libs_test_source_matches_only_tests_folders(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
