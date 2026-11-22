@@ -123,6 +123,46 @@ class CheckMainSyncFixture(unittest.TestCase):
 
 
 class CheckMainSyncTests(CheckMainSyncFixture):
+    @unittest.skipUnless(os.name == "posix", "Windows does not preserve trailing spaces in path components")
+    def test_repository_root_keeps_trailing_whitespace(self):
+        for name in ("workspace ", "workspace\t", "workspace\n"):
+            with self.subTest(name=name):
+                root = Path(self.directory.name) / name
+                root.mkdir()
+                repo = Repo(root)
+                repo.git("checkout", "-q", "-b", "feature")
+                repo.write("other.txt", "changed\n")
+                repo.commit("feature change")
+                result = run_tool(root, "--head", "feature", "--strict")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("1 ahead and 0 behind main", result.stdout)
+
+    @unittest.skipUnless(os.name == "posix" and sys.getfilesystemencoding() == "utf-8",
+                         "requires a POSIX filesystem with raw non-UTF-8 filenames")
+    def test_distinct_non_utf8_filenames_are_not_shared(self):
+        self.branch("feature")
+        self.repo.write(os.fsdecode(b"trace-\xff"), "feature\n")
+        self.repo.commit("feature path")
+        self.repo.git("checkout", "-q", "main")
+        self.repo.write(os.fsdecode(b"trace-\xfe"), "upstream\n")
+        self.repo.commit("upstream path (#42)")
+        result = run_tool(self.repo.path, "--head", "feature", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["shared"], [])
+        self.assertEqual(report["pulls"], {})
+
+    def test_merge_subject_with_unicode_line_separator_keeps_commit_id(self):
+        self.branch("feature")
+        self.repo.write("shared.txt", "feature\none\ntwo\nthree\n")
+        self.repo.commit("feature change")
+        self.repo.git("checkout", "-q", "main")
+        self.repo.write("shared.txt", "one\ntwo\nthree\nupstream\n")
+        self.repo.commit("fix(test): shared file\u2028(#42)")
+        upstream = check_main_sync.git(self.repo.path, "rev-parse", "--short", "main").stdout.strip()
+        report = check_main_sync.report(self.repo.path, "main", "feature")
+        self.assertEqual(report["pulls"], {42: upstream})
+
     def test_branch_level_with_main_is_clean_and_not_behind(self):
         self.branch("feature")
         self.repo.write("other.txt", "y\n")
