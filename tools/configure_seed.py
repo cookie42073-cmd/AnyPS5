@@ -15,7 +15,7 @@ QUOTED_DELIMITER = re.compile(r'":[A-Z]+=')
 
 def checks(cache):
     found, doc = {}, []
-    for line in Path(cache).read_text(encoding="utf-8-sig").split("\n"):
+    for number, line in enumerate(Path(cache).read_text(encoding="utf-8-sig").split("\n"), 1):
         if line.startswith("//"):
             doc.append(line)
             continue
@@ -24,11 +24,14 @@ def checks(cache):
         else:
             match = QUOTED_ENTRY.match(line) or ENTRY.match(line)
         if match and match.group(2) == "INTERNAL" and doc and CHECK.match(doc[0]):
+            name = match.group(1)
+            if name in found:
+                raise ValueError(f"{cache}:{number}: duplicate configure check {name!r}")
             help_text = "".join("\n" + line[4:] if line.startswith("//\\n") else line[2:] for line in doc)
             value = match.group(3)
             if len(value) >= 2 and value[0] == value[-1] == "'":
                 value = value[1:-1]
-            found[match.group(1)] = (value, help_text)
+            found[name] = (value, help_text)
         doc = []
     architecture_sizes = {name for name, (value, doc) in found.items()
                           if value == "0" and doc.startswith("CHECK_TYPE_SIZE: ")}
@@ -98,6 +101,8 @@ def main(argv=None):
             results = checks(Path(args.cache))
         except (OSError, UnicodeDecodeError) as error:
             parser.error(f"{args.cache}: {error}")
+        except ValueError as error:
+            parser.error(str(error))
         sys.stdout.write(render(selected(results, args.include, args.exclude)))
         return 0
     cache, seed = Path(args.cache), Path(args.seed)
@@ -107,6 +112,8 @@ def main(argv=None):
         results = checks(cache)
     except (OSError, UnicodeDecodeError) as error:
         parser.error(f"{cache}: {error}")
+    except ValueError as error:
+        parser.error(str(error))
     found = selected(results, args.include, args.exclude)
     try:
         write_seed(seed, render(found))
