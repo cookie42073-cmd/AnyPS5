@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +104,20 @@ class PercentageTests(unittest.TestCase):
 
 
 class MainErrorTests(unittest.TestCase):
+    def test_invalid_snapshot_names_the_input_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline, candidate = root / "baseline.json", root / "candidate.json"
+            for bad, good in ((baseline, candidate), (candidate, baseline)):
+                good.write_text(json.dumps(snapshot()), encoding="utf-8")
+                for invalid in ("{", "{}"):
+                    with self.subTest(bad=bad.name, invalid=invalid):
+                        bad.write_text(invalid, encoding="utf-8")
+                        done = subprocess.run([sys.executable, progress_diff.__file__, str(baseline), str(candidate)],
+                                              capture_output=True, text=True, timeout=5)
+                        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                        self.assertIn(str(bad), done.stderr)
+
     def run_main(self, base_text, head_text):
         with tempfile.TemporaryDirectory() as directory:
             base, head = Path(directory) / "base.json", Path(directory) / "head.json"
