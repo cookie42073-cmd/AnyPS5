@@ -104,30 +104,6 @@ class RebaseVerifyTests(unittest.TestCase):
     def test_a_clean_rebase_keeps_every_line_author_and_commit(self):
         self.assertEqual(self.verify(), [])
 
-    def test_changed_binary_bytes_are_verified_after_a_rebase(self):
-        path = "binary fixture.bin"
-        for branch in ("old", "new"):
-            self.git("checkout", "-q", branch)
-            (self.root / path).write_bytes(b"prefix\0original")
-            self.git("add", "--", path)
-            self.git("commit", "-q", "--amend", "--no-edit")
-        self.assertEqual(self.verify(), [])
-
-        (self.root / path).write_bytes(b"prefix\0substituted")
-        self.git("commit", "-q", "-a", "--amend", "--no-edit")
-        self.assertTrue(any("binary" in problem and path in problem for problem in self.verify()))
-
-    def test_distinct_non_utf8_bytes_are_not_treated_as_identical_text(self):
-        path = "legacy.txt"
-        for branch, data in (("old", b"legacy \xe9\n"), ("new", b"legacy \xf1\n")):
-            self.git("checkout", "-q", branch)
-            (self.root / path).write_bytes(data)
-            self.git("add", "--", path)
-            self.git("commit", "-q", "--amend", "--no-edit")
-        problems = self.verify()
-        self.assertEqual(len(problems), 2)
-        self.assertTrue(all(path in problem for problem in problems))
-
     def test_rebase_reports_a_crlf_line_changed_to_lf(self):
         path = "windows.txt"
         self.git("checkout", "-q", "old")
@@ -276,6 +252,30 @@ class RebaseVerifyTests(unittest.TestCase):
                     f"{path}: an added line is missing (1x): Subproject commit {expected}",
                     f"{path}: a line is added that the branch did not add (1x): Subproject commit {unexpected}",
                 ])
+
+    def test_changed_binary_bytes_are_verified_after_a_rebase(self):
+        path = "binary fixture.bin"
+        for branch in ("old", "new"):
+            self.git("checkout", "-q", branch)
+            (self.root / path).write_bytes(b"prefix\0original")
+            self.git("add", "--", path)
+            self.git("commit", "-q", "--amend", "--no-edit")
+        self.assertEqual(self.verify(), [])
+
+        (self.root / path).write_bytes(b"prefix\0substituted")
+        self.git("commit", "-q", "-a", "--amend", "--no-edit")
+        self.assertTrue(any("binary" in problem and path in problem for problem in self.verify()))
+
+    def test_distinct_non_utf8_bytes_are_not_treated_as_identical_text(self):
+        path = "legacy.txt"
+        for branch, data in (("old", b"legacy \xe9\n"), ("new", b"legacy \xf1\n")):
+            self.git("checkout", "-q", branch)
+            (self.root / path).write_bytes(data)
+            self.git("add", "--", path)
+            self.git("commit", "-q", "--amend", "--no-edit")
+        problems = self.verify()
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all(path in problem for problem in problems))
 
     def test_a_line_added_twice_is_reported(self):
         self.write("f.txt", "a\nNEW\nNEW\nb\nc\ntail\n")

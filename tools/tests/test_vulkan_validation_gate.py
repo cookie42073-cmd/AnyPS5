@@ -199,16 +199,21 @@ class ReportTests(unittest.TestCase):
             build = root / "build"
             runtime = build / "runtime" / "nested"
             runtime.mkdir(parents=True)
-            external = root / "external.dll"
-            external.write_bytes(b"external runtime")
+            external = root / "external"
+            external.mkdir()
+            (external / "runtime.dll").write_bytes(b"external runtime")
             internal = runtime / "internal.dll"
             internal.write_bytes(b"internal runtime")
             self.assertEqual(set(gate.artifact_hashes(build, [], ["runtime"])), {str(internal)})
-            try:
-                (runtime / "linked.dll").symlink_to(external)
-            except OSError as error:
-                self.skipTest(f"symlinks unavailable: {error}")
-            with self.assertRaisesRegex(gate.GateError, "linked.dll"):
+            link = runtime / "linked"
+            if os.name == "nt":
+                junction = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(external)],
+                                          capture_output=True, timeout=10)
+                if junction.returncode:
+                    self.skipTest(f"junctions unavailable: {junction.stderr!r}")
+            else:
+                link.symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(gate.GateError, "linked"):
                 gate.artifact_hashes(build, [], ["runtime"])
 
     def test_relative_executable_follows_the_test_working_directory(self):

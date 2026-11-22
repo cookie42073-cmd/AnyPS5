@@ -18,9 +18,10 @@ import xml.etree.ElementTree as ET
 FORCED = {"ANYPS5_REQUIRE_VULKAN": "1", "ANYPS5_NO_SHADER_CACHE": "1",
           "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation", "VK_LOADER_DEBUG": "layer"}
 PUBLIC_ENV = ("ANYPS5_GPU", "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_LAYER_PATH")
-DIAGNOSTIC = re.compile(
+DIAGNOSTIC = re.compile(r"\b(VUID-[A-Za-z0-9_-]+|SYNC-HAZARD-[A-Za-z0-9_-]+)")
+VALIDATION_ID = re.compile(
     r"Validation (?:Error|(?:Performance )?Warning):\s*\[\s*([^]\r\n]+?)\s*\]"
-    r"|\b((?:VUID-|SYNC-HAZARD-)[\w-]+)\s*\((?:ERROR|WARNING)\s*/")
+    rf"|{DIAGNOSTIC.pattern}\s*\((?:ERROR|WARNING)\s*/")
 MISSING_LAYER = "was not found but was requested by env var VK_INSTANCE_LAYERS"
 INSERTED_LAYER = 'Insert instance layer "VK_LAYER_KHRONOS_validation"'
 
@@ -270,10 +271,11 @@ def artifact_hashes(build, tests, runtime):
             raise GateError(f"runtime path must exist inside the build: {relative}")
         if path.is_dir():
             for entry in path.rglob("*"):
-                if entry.is_symlink() and not entry.resolve().is_relative_to(build):
+                resolved = entry.resolve()
+                if not resolved.is_relative_to(build):
                     raise GateError(f"runtime path resolves outside the build: {entry}")
-                if entry.is_file():
-                    paths.add(entry.resolve())
+                if resolved.is_file():
+                    paths.add(resolved)
         else:
             paths.add(path)
     hashes = {}
@@ -311,7 +313,7 @@ def parse_report(path, expected):
         inserted = False
         for channel in ("system-out", "system-err"):
             for line in (case.findtext(channel) or "").splitlines():
-                if match := DIAGNOSTIC.search(line):
+                if match := VALIDATION_ID.search(line):
                     diagnostic = (match.group(1) or match.group(2)).strip()
                     if diagnostic:
                         messages[diagnostic] += 1
