@@ -2075,6 +2075,19 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertEqual(prepare_release_notes.release_body(notes), remainder)
         self.assertEqual(prepare_release_notes.release_body(remainder), remainder)
 
+    def test_long_notes_ignore_headings_inside_markdown_fences(self):
+        for marker in ("````", "~~~~"):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(marker=marker, newline=newline):
+                    intro = ["Intro", marker + "markdown", "## What's Changed", "Example", marker, ""]
+                    changes = ["## What's Changed", marker + "text", "## Fake boundary",
+                               marker[:-1], "**Full Changelog**: example", marker + marker[0],
+                               "* change" * 16000]
+                    tail = ["## New Contributors", "* @example", "**Full Changelog**: URL", ""]
+                    notes = newline.join(intro + changes + tail)
+                    self.assertEqual(prepare_release_notes.release_body(notes),
+                                     newline.join(intro + tail))
+
     def test_full_notes_are_preserved_in_asset(self):
         for notes in ("", "## What's Changed\n* Fix\n", "я" * 125000,
                       "## What's Changed\n" + "* Fix\n" * 25000 + "## New Contributors\n* @example\n"):

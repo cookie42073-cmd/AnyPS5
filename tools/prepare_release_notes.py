@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 
 BODY_LIMIT = 125000
+RELEASE_MARKERS = re.compile(
+    r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)"
+    r"|^(?P<changes>## What's Changed[^\S\r\n]*\r?\n)"
+    r"|^(?:#{1,2} |\*\*Full Changelog\*\*:)",
+    re.MULTILINE,
+)
 
 
 def resolve_output_path(path):
@@ -28,13 +34,23 @@ def resolve_output_path(path):
 def release_body(notes):
     if len(notes) <= BODY_LIMIT:
         return notes
-    return re.sub(
-        r"^## What's Changed[^\S\r\n]*\r?\n.*?(?=^#{1,2} |^\*\*Full Changelog\*\*:|\Z)",
-        "",
-        notes,
-        count=1,
-        flags=re.MULTILINE | re.DOTALL,
-    )
+    fence = None
+    changes_start = None
+    for marker in RELEASE_MARKERS.finditer(notes):
+        token = marker["fence"]
+        if token:
+            info = marker["info"]
+            if fence:
+                if token[0] == fence[0] and len(token) >= len(fence) and not info.strip(" \t"):
+                    fence = None
+            elif token[0] != "`" or "`" not in info:
+                fence = token
+        elif not fence:
+            if changes_start is not None:
+                return notes[:changes_start] + notes[marker.start():]
+            if marker["changes"]:
+                changes_start = marker.start()
+    return notes if changes_start is None else notes[:changes_start]
 
 
 def unique_release_object(pairs):
