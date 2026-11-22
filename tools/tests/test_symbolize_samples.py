@@ -1785,6 +1785,42 @@ class SampleFileLoadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "thread filtering requires thread headings"):
             symbolize_samples.load(self.write("libA 0x10 2 5\n"), thread="1")
 
+    def test_load_rejects_numbers_outside_the_sampler_record_widths(self):
+        fields = (
+            ("# module A 0x{value:x} 0x0", "module image size", 32),
+            ("# module A 0x1 0x{value:x}", "module timestamp", 32),
+            ("# {value} samples", "sample total", 64),
+            ("thread {value} samples 0", "thread ID", 32),
+            ("thread 1 samples {value}", "thread sample count", 64),
+            ("A 0x{value:x} 1 1", "address offset", 64),
+            ("A 0x1 {value} 1", "self sample count", 64),
+            ("A 0x1 1 {value}", "inclusive sample count", 64),
+            ("main;work {value}", "stack sample count", 64),
+        )
+        for template, field, bits in fields:
+            for value in (1 << bits, 10**400):
+                with self.subTest(field=field, value=value):
+                    path = self.write("# sampler\n" + template.format(value=value) + "\n")
+                    with self.assertRaisesRegex(ValueError, rf"samples\.txt:2: {field} must fit in unsigned {bits} bits"):
+                        symbolize_samples.load(path)
+
+    def test_load_rejects_self_counts_greater_than_inclusive_counts(self):
+        for prefix, thread in (("", None), ("thread 1 samples 0\nthread 2 samples 2\n", "1")):
+            with self.subTest(thread=thread):
+                path = self.write(prefix + "A 0x1 2 1\n")
+                with self.assertRaisesRegex(ValueError, "self sample count exceeds inclusive"):
+                    symbolize_samples.load(path, thread)
+
+    def test_load_accepts_maximum_width_values(self):
+        samples = symbolize_samples.load(self.write(
+            "# module A 0xffffffff 0xFFFFFFFF\n"
+            "thread 4294967295 samples 18446744073709551615\n"
+            "A 0xffffffffffffffff 18446744073709551615 18446744073709551615\n"
+        ))
+        self.assertEqual(samples.headers["a"], (2**32 - 1, 2**32 - 1))
+        self.assertEqual(samples.total["threads"], 2**64 - 1)
+        self.assertEqual(samples.self_counts[("A", "0xffffffffffffffff")], 2**64 - 1)
+
 
 if __name__ == "__main__":
     unittest.main()
