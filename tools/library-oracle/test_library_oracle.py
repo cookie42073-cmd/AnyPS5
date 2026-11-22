@@ -107,6 +107,28 @@ class KnownTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 library_oracle.load_known(path)
 
+    def test_duplicate_known_case_is_refused_instead_of_overwriting_its_kind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "known.tsv"
+            path.write_text("case\tdiff\tfirst\ncase\tskip\tsecond\n", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, r"known.tsv:2: duplicate case 'case'"):
+                library_oracle.load_known(path)
+
+    def test_duplicate_families_are_rejected_before_fetching_or_replaying(self):
+        with mock.patch.object(library_oracle, "fetch") as fetch, \
+                mock.patch.object(library_oracle, "replay") as replay, \
+                mock.patch.object(library_oracle, "case_ids", return_value=set()), \
+                mock.patch("sys.stdout", new_callable=io.StringIO), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as errors:
+            fetch.return_value = Path("unused")
+            replay.return_value = ({}, "complete")
+            with self.assertRaises(SystemExit) as error:
+                library_oracle.main(["libc", "libc", "--replay", "unused"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("families must not repeat", errors.getvalue())
+        fetch.assert_not_called()
+        replay.assert_not_called()
+
     def test_write_known_after_one_family_preserves_unrun_findings(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "known.tsv"
