@@ -236,6 +236,27 @@ class HistoryDateWindowTests(unittest.TestCase):
 
 
 class ProgressHistoryTests(unittest.TestCase):
+    def test_git_paths_containing_non_ascii_characters_are_measured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "-C", directory, "init", "-q"], check=True)
+            subprocess.run(["git", "-C", directory, "config", "core.quotePath", "true"], check=True)
+            commit(root, "2026-01-01", "first", "int APS5_VABI A() { return 0; }\n")
+            name = "core/libs/prx/libSceExample/Export.cpp"
+            subprocess.run(["git", "-C", directory, "mv", name, name.replace("Export", "Exp\u00f3rt")], check=True)
+            subprocess.run(["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@t",
+                            "commit", "-qm", "rename export"], check=True)
+            with patch.multiple(progress, ROOT=root, PRX=root / "core/libs/prx", OPCODES=root / OPCODES):
+                result = progress_history.measure("HEAD")
+            self.assertIsNotNone(result)
+            self.assertEqual(result["libraries"]["done"], 1)
+
+    def test_unrepresentable_git_date_identifies_the_commit(self):
+        sha = "b" * 40
+        with patch.object(progress_history, "git", return_value=f"{sha} 253402300800\n".encode()):
+            with self.assertRaisesRegex(ValueError, f"{sha}.*timestamp"):
+                progress_history.daily_commits("HEAD")
+
     def test_cache_symlink_updates_target_without_replacing_link(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -429,7 +450,7 @@ class ProgressHistoryTests(unittest.TestCase):
                 return {"done": 1, "total": 2, "percent": 50.0}
 
             def git_output(*args):
-                return b"current/prx/file.cpp\ncurrent/opcodes.txt\n" if args[0] == "ls-tree" else b"archive"
+                return b"current/prx/file.cpp\0current/opcodes.txt\0" if args[0] == "ls-tree" else b"archive"
 
             with patch.multiple(progress, ROOT=root, PRX=current_prx, OPCODES=current_opcodes), \
                     patch.object(progress_history, "git", side_effect=git_output), \
@@ -456,7 +477,7 @@ class ProgressHistoryTests(unittest.TestCase):
                     (destination / "current" / "opcodes.txt").write_text("archived", encoding="utf-8")
 
             def git_output(*args):
-                return b"current/prx/file.cpp\ncurrent/opcodes.txt\n" if args[0] == "ls-tree" else b"archive"
+                return b"current/prx/file.cpp\0current/opcodes.txt\0" if args[0] == "ls-tree" else b"archive"
 
             with patch.multiple(progress, ROOT=root, PRX=current_prx, OPCODES=current_opcodes), \
                     patch.object(progress_history, "git", side_effect=git_output), \
@@ -483,7 +504,7 @@ class ProgressHistoryTests(unittest.TestCase):
                     (destination / "current" / "opcodes.txt").write_text("archived", encoding="utf-8")
 
             def git_output(*args):
-                return b"current/prx/file.cpp\ncurrent/opcodes.txt\n" if args[0] == "ls-tree" else b"archive"
+                return b"current/prx/file.cpp\0current/opcodes.txt\0" if args[0] == "ls-tree" else b"archive"
 
             source = {"instructions": {"decoded": 3, "total": 4},
                       "profiles": {"gfx1013": {"instructions": {"decoded": 5, "total": 8}}}}
