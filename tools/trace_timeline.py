@@ -1,6 +1,7 @@
 import argparse
 import html
 import math
+import re
 import sys
 import zlib
 from itertools import chain
@@ -18,6 +19,7 @@ displayed window. Gaps may contain unrecorded work."""
 
 LABEL_WIDTH = 120
 ROW_HEIGHT = 18
+INVALID_XML_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
 def window_slices(trace, start_us, end_us, threads=None):
@@ -35,37 +37,42 @@ def window_slices(trace, start_us, end_us, threads=None):
 
 
 def layout(slices, start_us, end_us, width_px, max_slices=5000):
-    span = max(end_us - start_us, 1e-9)
+    span = end_us - start_us or 1.0
     rows = sorted({(slice_["thread"], slice_["tid"]) for slice_ in slices})
     row_of = {thread: row for row, thread in enumerate(rows)}
     kept = sorted(slices, key=lambda slice_: -slice_["dur"])[:max_slices]
     bars = []
     for slice_ in kept:
-        x = LABEL_WIDTH + (slice_["ts"] - start_us) / span * width_px
+        offset = (slice_["ts"] - start_us) / span * width_px
         w = max(slice_["dur"] / span * width_px, 1.0)
+        x = LABEL_WIDTH + min(offset, width_px - w)
         bars.append({"thread": slice_["thread"], "tid": slice_["tid"], "name": slice_["name"],
                      "ms": slice_["dur"] / 1000.0, "x": x, "w": w,
                      "y": row_of[(slice_["thread"], slice_["tid"])] * ROW_HEIGHT})
     return {"threads": [name for name, _ in rows], "bars": bars, "left_out": len(slices) - len(kept), "width": width_px + LABEL_WIDTH}
 
 
+def escape_text(value):
+    return html.escape(INVALID_XML_TEXT.sub("\ufffd", value))
+
+
 def svg(laid):
     height = max(len(laid["threads"]), 1) * ROW_HEIGHT
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{laid["width"]}" height="{height}">']
     for row, name in enumerate(laid["threads"]):
-        parts.append(f'<text x="2" y="{row * ROW_HEIGHT + 13}" font-size="11">{html.escape(name)}</text>')
+        parts.append(f'<text x="2" y="{row * ROW_HEIGHT + 13}" font-size="11">{escape_text(name)}</text>')
     for bar in laid["bars"]:
-        title = html.escape(f'{bar["name"]} ({bar["ms"]:.3f} ms), tid {bar["tid"]}')
+        title = escape_text(f'{bar["name"]} ({bar["ms"]:.3f} ms), tid {bar["tid"]}')
         parts.append(f'<rect x="{bar["x"]:.2f}" y="{bar["y"] + 2}" width="{bar["w"]:.2f}" height="{ROW_HEIGHT - 4}" fill="#4a7fc1"><title>{title}</title></rect>')
     parts.append("</svg>")
     return "".join(parts)
 
 
 def page(svg_text, title, notes):
-    note_items = "".join(f"<li>{html.escape(note)}</li>" for note in notes)
-    return ("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>" + html.escape(title) + "</title>"
+    note_items = "".join(f"<li>{escape_text(note)}</li>" for note in notes)
+    return ("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>" + escape_text(title) + "</title>"
             "<style>body{font-family:sans-serif;margin:16px}svg{display:block;background:#f6f6f6}</style></head><body>"
-            "<h1>" + html.escape(title) + "</h1><ul>" + note_items + "</ul>" + svg_text + "</body></html>\n")
+            "<h1>" + escape_text(title) + "</h1><ul>" + note_items + "</ul>" + svg_text + "</body></html>\n")
 
 
 def nonnegative_number(value):

@@ -176,6 +176,27 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(laid["bars"][0]["ms"], 6.0)
         self.assertEqual(laid["left_out"], 2)
 
+    def test_short_nonempty_window_uses_the_entire_axis(self):
+        slices = trace_timeline.window_slices(trace_of([complete(1, "small", 0, 1e-12)]), 0, 1e-12)
+        laid = trace_timeline.layout(slices, 0, 1e-12, 1000)
+        self.assertEqual(laid["bars"][0]["w"], 1000)
+
+    def test_minimum_width_bar_stays_inside_the_right_edge(self):
+        slices = trace_timeline.window_slices(trace_of([complete(1, "last", 9999.9, 0.1)]), 0, 10000)
+        laid = trace_timeline.layout(slices, 0, 10000, 100)
+        bar = laid["bars"][0]
+        self.assertEqual(bar["w"], 1)
+        self.assertLessEqual(bar["x"] + bar["w"], laid["width"])
+
+    def test_cli_saves_trace_labels_with_invalid_svg_characters(self):
+        path = Path(self.tmp.name) / "capture.json"
+        out = path.with_suffix(".html")
+        path.write_text(json.dumps(document([complete(1, "driver\u0000\ud800", 0, 1)])), encoding="utf-8")
+        done = subprocess.run([sys.executable, trace_timeline.__file__, str(path)], capture_output=True, timeout=5)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        page = out.read_text(encoding="utf-8")
+        self.assertIn("driver\ufffd\ufffd", page)
+
     def test_svg_escapes_slice_names(self):
         laid = trace_timeline.layout(trace_timeline_slices([complete(1, "<script>", 0, 1000)]), 0, 2000, 1000)
         text = trace_timeline.svg(laid)
