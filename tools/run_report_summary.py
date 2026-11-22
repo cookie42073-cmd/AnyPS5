@@ -19,19 +19,25 @@ def number_text(value):
     return str(value) if is_finite_number(value) else "unknown"
 
 
+def is_count(value):
+    return type(value) is int and value >= 0
+
+
+def observation_text(value):
+    return str(value) if is_finite_number(value) and value >= 0 else "unknown"
+
+
 def count_text(value, noun):
-    return f"{number_text(value)} {noun}{'' if value == 1 else 's'}"
+    if not is_count(value):
+        return f"unknown {noun}s"
+    return f"{value} {noun}{'' if value == 1 else 's'}"
 
 
 def total_count(items, key):
     counts = [item.get(key, 0) for item in items if isinstance(item, dict)]
-    if any(not is_finite_number(count) for count in counts):
+    if any(not is_count(count) for count in counts):
         return None
-    try:
-        total = sum(counts)
-    except OverflowError:
-        return None
-    return total if is_finite_number(total) else None
+    return sum(counts)
 
 
 def render(report):
@@ -63,16 +69,16 @@ def render(report):
     if run.get("exitCode") is not None:
         result += f" (exit code {number_text(run['exitCode'])})"
     lines.append(f"Result: {result}")
-    lines.append(f"Progress: {text(run.get('stage'))} after {number_text(run.get('seconds'))} seconds")
+    lines.append(f"Progress: {text(run.get('stage'))} after {observation_text(run.get('seconds'))} seconds")
 
     frames = run.get("framesPresented")
     if coverage.get("milestones"):
-        frame_summary = count_text(frames, "frame") if isinstance(frames, int) and not isinstance(frames, bool) else "unknown frame count"
+        frame_summary = count_text(frames, "frame") if is_count(frames) else "unknown frame count"
         fps = run.get("averageFps")
-        if is_finite_number(fps):
+        if is_finite_number(fps) and fps >= 0:
             fps_text = f"{fps}.00" if type(fps) is int else f"{fps:.2f}"
             frame_summary += f", {fps_text} average FPS"
-        elif isinstance(frames, int) and not isinstance(frames, bool) and frames > 1:
+        elif is_count(frames) and frames > 1:
             frame_summary += ", average FPS unavailable"
         lines.append(f"Rendering: {frame_summary}")
     else:
@@ -85,7 +91,7 @@ def render(report):
     if system.get("cpu"):
         system_summary.append(text(system["cpu"]))
     if system.get("ramGiB") is not None:
-        system_summary.append(f"{number_text(system['ramGiB'])} GiB RAM")
+        system_summary.append(f"{observation_text(system['ramGiB'])} GiB RAM")
     if gpu_name:
         system_summary.append(text(gpu_name))
     lines.append("System: " + ", ".join(system_summary))
@@ -111,7 +117,8 @@ def render(report):
         lines.append("Missing functions: not collected")
 
     if coverage.get("shaders"):
-        lines.append(f"Shaders: {number_text(shaders.get('compiled', 0))} compiled, {count_text(shaders.get('failed', 0), 'failure')}")
+        compiled = shaders.get("compiled", 0)
+        lines.append(f"Shaders: {compiled if is_count(compiled) else 'unknown'} compiled, {count_text(shaders.get('failed', 0), 'failure')}")
     else:
         lines.append("Shaders: compilation data was not collected")
     if coverage.get("unsupported"):
@@ -128,11 +135,11 @@ def render(report):
     else:
         lines.append("Unsupported shader instructions: not collected")
 
-    if run.get("recovered"):
+    if run.get("recovered") is True:
         lines.append("Warning: recovered report; the run ended without writing its normal report")
-    if run.get("incomplete"):
+    if run.get("incomplete") is True:
         lines.append("Warning: one or more observations were dropped")
-    if any(value for value in truncated.values() if isinstance(value, int) and not isinstance(value, bool)):
+    if any(is_count(value) and value > 0 for value in truncated.values()):
         lines.append("Warning: one or more diagnostic lists were truncated")
     lines.append("This summary uses only the fields present in the local run report; it does not upload data.")
     return "\n".join(lines)

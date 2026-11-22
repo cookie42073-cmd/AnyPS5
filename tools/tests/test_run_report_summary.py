@@ -299,6 +299,41 @@ class RunReportSummaryTests(unittest.TestCase):
         report["stop"].update(kind="crash", reason="SIGSEGV", message="bad access")
         self.assertIn("Stop: crash (SIGSEGV): bad access", render(report))
 
+    def test_negative_observations_and_fractional_counters_are_unknown(self):
+        fields = (
+            (("run", "seconds"), "after unknown seconds", False),
+            (("run", "framesPresented"), "unknown frame count", True),
+            (("run", "averageFps"), "average FPS unavailable", False),
+            (("system", "ramGiB"), "unknown GiB RAM", False),
+            (("shaders", "compiled"), "unknown compiled", True),
+            (("shaders", "failed"), "unknown failures", True),
+            (("truncated", "functions"), "unknown additional functions omitted", True),
+            (("truncated", "unsupported"), "unknown additional instructions omitted", True),
+            (("missing", "functions", 0, "calls"), "unknown calls across 1 function", True),
+            (("shaders", "unsupported", 0, "count"), "unknown occurrences across 1 instruction", True),
+        )
+        for path, expected, integer in fields:
+            for value in (-1, -0.5, *([0.5, 2.5] if integer else [])):
+                if path == ("run", "framesPresented") and value > 0:
+                    continue
+                with self.subTest(path=path, value=value):
+                    report = self.report("stop-none.json")
+                    report["missing"]["functions"] = [{"calls": 3}]
+                    report["shaders"]["unsupported"] = [{"count": 3}]
+                    parent = report
+                    for key in path[:-1]:
+                        parent = parent[key]
+                    parent[path[-1]] = value
+                    self.assertIn(expected, render(report))
+
+    def test_non_boolean_run_status_flags_do_not_emit_warnings(self):
+        for key, warning in (("recovered", "recovered report"), ("incomplete", "observations were dropped")):
+            for value in ("true", "false", 1, -1, [True], {"set": True}):
+                with self.subTest(key=key, value=value):
+                    report = self.report("stop-none.json")
+                    report["run"][key] = value
+                    self.assertNotIn(warning, render(report))
+
     def test_average_fps_is_formatted_with_two_decimals(self):
         report = self.report("stop-none.json")
         report["run"]["averageFps"] = 59.9
