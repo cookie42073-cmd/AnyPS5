@@ -133,6 +133,24 @@ class ReferenceErrorTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(error, "")
 
+    def test_duplicate_cases_are_rejected_before_creating_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "evidence"
+            arguments = ["reference", "--host", "--build", str(root), "--relinker", sys.executable,
+                         "--toolchain", str(root), "--output", str(artifact),
+                         "--cases", "memory", "validation", "memory"]
+            errors, output = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "argv", arguments), mock.patch.object(runner, "run") as run, \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                with self.assertRaises(SystemExit) as error:
+                    runner.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("--cases must not repeat a case", errors.getvalue())
+            self.assertEqual(output.getvalue(), "")
+            self.assertFalse(artifact.exists())
+            run.assert_not_called()
+
     def test_an_artifact_path_outside_the_output_encoding_is_printed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

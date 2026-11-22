@@ -158,6 +158,8 @@ def main():
     if args.cases is None:
         args.suite = args.suite or "all"
         args.cases = list(PARITY_CASES if args.suite == "parity" else CASES)
+    elif len(args.cases) != len(set(args.cases)):
+        parser.error("--cases must not repeat a case")
     if sys.platform not in ("win32", "linux"):
         parser.error("The reference adapter supports Windows and Linux")
     if sys.platform == "win32" and args.toolchain is None:
