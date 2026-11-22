@@ -1,8 +1,10 @@
 import argparse
 import hashlib
 import os
+import stat
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -42,18 +44,35 @@ def fetch(family, cache, opener=urllib.request.urlopen):
     if hashlib.sha256(data).hexdigest() != FAMILIES[family]:
         raise SystemExit(f"{family}: the downloaded measurements do not match the pinned digest")
     cache.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    output = tempfile.NamedTemporaryFile(dir=cache, prefix=f".{path.name}.", delete=False)
+    temporary = Path(output.name)
+    try:
+        with output:
+            output.write(data)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 
 def load_known(path):
     known = {}
-    if not path.is_file():
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
         return known
-    for number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+    except OSError as error:
+        raise SystemExit(f"{path}: cannot read known findings: {error}") from error
+    if not stat.S_ISREG(mode):
+        raise SystemExit(f"{path}: cannot read known findings: expected a regular file")
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SystemExit(f"{path}: cannot read known findings: {error}") from error
+    for number, line in enumerate(lines, 1):
         if not line.strip() or line.startswith("#"):
             continue
-        fields = line.split("\t")
+        fields = line.split("\t", 2)
         if len(fields) < 2 or fields[1] not in KINDS:
             raise SystemExit(f"{path}:{number}: expected 'id<TAB>kind<TAB>reason' with kind one of {', '.join(KINDS)}")
         known[fields[0]] = (fields[1], fields[2] if len(fields) > 2 else "")
@@ -64,7 +83,8 @@ def write_known(path, known, findings, ran_cases):
     rows = {key: value for key, value in known.items() if value[0] == "skip" or key not in ran_cases}
     for case, (kind, _) in findings.items():
         rows[case] = (kind, known.get(case, (kind, ""))[1])
-    lines = [f"{case}\t{kind}\t{reason}".rstrip("\t") for case, (kind, reason) in sorted(rows.items())]
+    lines = ["\t".join((case, kind, reason) if reason else (case, kind))
+             for case, (kind, reason) in sorted(rows.items())]
     with path.open("w", encoding="utf-8", newline="\n") as output:
         output.write("".join(line + "\n" for line in lines))
 
