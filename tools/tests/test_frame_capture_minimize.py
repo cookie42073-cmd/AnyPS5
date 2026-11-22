@@ -249,6 +249,23 @@ if command == 'inspect':
             with self.subTest(entry=entry), self.assertRaisesRegex(RuntimeError, "invalid group"):
                 frame_capture_minimize.Minimizer.validate_entries([entry], "chunks")
 
+    def test_inspection_rejects_ambiguous_or_deep_json_before_replay(self):
+        cases = (
+            ('{"calls":[null],"calls":[],"chunks":[]}', "duplicate JSON"),
+            ('{"calls":[{"index":9,"index":0,"kind":"frame-start","memory_group":null}],"chunks":[]}', "duplicate JSON"),
+            ('{"calls":[],"chunks":[],"extra":' + "[" * 10000 + "0" + "]" * 10000 + "}", "capture filter returned invalid inspection JSON"),
+        )
+        for inspection, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                args, _, _, output = self.empty_cli(Path(directory), filter_source=f"print({inspection!r})\n")
+                stderr = io.StringIO()
+                with patch.object(frame_capture_minimize.Minimizer, "replay_once", return_value=(False, "test")) as replay:
+                    with contextlib.redirect_stderr(stderr):
+                        self.assertEqual(frame_capture_minimize.main(args), 2)
+                replay.assert_not_called()
+                self.assertIn(expected, stderr.getvalue())
+                self.assertFalse(output.exists())
+
     def test_inspection_requires_calls_list(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

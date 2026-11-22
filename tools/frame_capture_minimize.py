@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from performance_compare import unique_json_object
+
 
 class TrialLimitReached(Exception):
     pass
@@ -74,8 +76,8 @@ class Minimizer:
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "capture inspection failed")
         try:
-            description = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
+            description = json.loads(result.stdout, object_pairs_hook=unique_json_object)
+        except (ValueError, RecursionError) as error:
             raise RuntimeError(f"capture filter returned invalid inspection JSON: {error}") from error
         if not isinstance(description, dict):
             raise RuntimeError("capture inspection must be a JSON object")
