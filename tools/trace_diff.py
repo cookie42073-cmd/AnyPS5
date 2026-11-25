@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import zlib
+from collections import defaultdict
 from pathlib import Path
 
 import trace_digest
@@ -14,20 +15,25 @@ The deltas are B minus A. A capture's digest is built by trace_digest.py, so the
 losses make the slice timings describe retained events only."""
 
 
+def thread_timings(rows):
+    timings = defaultdict(lambda: (0.0, 0.0))
+    for row in rows:
+        name = row["thread"]
+        busy, wait = timings[name]
+        timings[name] = busy + row["busy_ms_per_frame"], wait + row["wait_ms_per_frame"]
+    return timings
+
+
 def compare(a_path, b_path, top=10):
     a = trace_digest.digest(trace_digest.load_trace(a_path), None, None, 0, None)
     b = trace_digest.digest(trace_digest.load_trace(b_path), None, None, 0, None)
 
-    a_threads = {row["thread"]: row for row in a["threads"]}
-    b_threads = {row["thread"]: row for row in b["threads"]}
+    a_threads = thread_timings(a["threads"])
+    b_threads = thread_timings(b["threads"])
     threads = []
     for name in sorted(a_threads.keys() | b_threads.keys()):
-        left = a_threads.get(name, {})
-        right = b_threads.get(name, {})
-        busy_a = left.get("busy_ms_per_frame", 0.0)
-        busy_b = right.get("busy_ms_per_frame", 0.0)
-        wait_a = left.get("wait_ms_per_frame", 0.0)
-        wait_b = right.get("wait_ms_per_frame", 0.0)
+        busy_a, wait_a = a_threads.get(name, (0.0, 0.0))
+        busy_b, wait_b = b_threads.get(name, (0.0, 0.0))
         threads.append({"thread": name, "a_busy_ms_per_frame": busy_a, "b_busy_ms_per_frame": busy_b,
                         "busy_delta_ms_per_frame": busy_b - busy_a,
                         "a_wait_ms_per_frame": wait_a, "b_wait_ms_per_frame": wait_b,
