@@ -103,6 +103,16 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 2)
         self.assertIn("FAIL", missing.stderr)
 
+    def test_markdown_escapes_trace_labels_without_changing_json_names(self):
+        capture = events(10000)
+        capture[0]["args"]["name"] = "worker | queue\nnext"
+        capture[2]["name"] = "packet | draw\nnext"
+        result = self.diff(capture, capture)
+        rendered = trace_diff.markdown(result)
+        self.assertIn("| worker &#124; queue<br>next |", rendered)
+        self.assertIn("| packet &#124; draw<br>next |", rendered)
+        self.assertIn("worker | queue\nnext", [row["thread"] for row in result["threads"]])
+
 
 if __name__ == "__main__":
     unittest.main()
